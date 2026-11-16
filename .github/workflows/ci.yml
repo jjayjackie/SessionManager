@@ -1,0 +1,136 @@
+name: CI
+
+# All installs, checks, tests, packaging and releases run here on GitHub-hosted runners.
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }}, node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, node: 22, primary: true }
+          - { os: ubuntu-latest, node: 24, primary: false }
+          - { os: macos-15-intel, node: 22, primary: false }
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Boundary and safety audit
+        run: npm run audit
+      - name: Typecheck (client and server)
+        run: npm run typecheck
+      - name: Lint
+        run: npm run lint
+      - name: Tests (isolated synthetic sessions)
+        run: npm test
+      - name: Bundle check (esbuild, as Paseo compiles plugins)
+        run: npm run bundle:check
+      - name: Runtime dependency audit
+        run: npm audit --omit=dev --audit-level=high
+      - name: Full dependency audit (informational)
+        if: matrix.primary
+        continue-on-error: true
+        run: npm audit --audit-level=critical
+
+  codeql:
+    name: CodeQL
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+      - uses: github/codeql-action/analyze@v4
+
+  package:
+    name: package
+    needs: [verify]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+      - name: Stage plugin
+        run: node scripts/stage.mjs
+      - name: Build archives
+        id: archive
+        run: |
+          version=$(node -p "require('./package.json').version")
+          name="claude-session-manager-${version}"
+          cd dist
+          tar -czf "${name}.tar.gz" claude-session-manager
+          zip -qr "${name}.zip" claude-session-manager
+          sha256sum "${name}.tar.gz" "${name}.zip" > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          echo "name=${name}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.archive.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/SHA256SUMS.txt
+          retention-days: 30
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [package, codeql]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Check tag matches package version
+        run: |
+          version=$(node -p "require('./package.json').version")
+          test "${GITHUB_REF_NAME}" = "v${version}" || { echo "::error::Tag ${GITHUB_REF_NAME} does not match version ${version}"; exit 1; }
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: claude-session-manager-*
+          path: release
+          merge-multiple: true
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" release/* \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Claude session manager ${GITHUB_REF_NAME#v}" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
