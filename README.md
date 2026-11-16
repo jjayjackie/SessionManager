@@ -1,186 +1,102 @@
+<div align="center">
+
 # Claude session manager
 
-[简体中文](./README.zh-CN.md)
+**Browse, search, delete and restore native Claude Code sessions from [Paseo](https://paseo.sh).**
 
-A [Paseo](https://paseo.sh) plugin for managing **native Claude Code session history** on every
-Paseo host: browse, search, inspect, copy a resume command, delete to a trash, restore, and purge.
-It reads `~/.claude/projects/` directly (and every other Claude configuration directory, see below),
-so it covers sessions started in a terminal, an IDE, or by Paseo alike.
+English · [简体中文](./README.zh-CN.md)
 
-Derived from [`session-usage`](https://github.com/panrafal/paseo-plugins/tree/main/session-usage)
-by panrafal (MIT). The Claude directory discovery and the Paseo agent-record reader are adapted from
-it; the scanner, deletion engine, trash, and UI are new.
+[![CI](https://github.com/jjayjackie/paseo-claude-session-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/jjayjackie/paseo-claude-session-manager/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jjayjackie/paseo-claude-session-manager)](https://github.com/jjayjackie/paseo-claude-session-manager/releases)
+[![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A50.13.0-6e7bff)](https://paseo.sh)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/screen-en-dark.svg">
+  <img alt="Claude session manager: projects on the left, sessions in the middle, details on the right" src="./docs/images/screen-en-light.svg" width="100%">
+</picture>
+
+<sub>Illustration with sample data.</sub>
+
+</div>
 
 ## Features
 
-- **Every Claude directory on the host**: `$CLAUDE_CONFIG_DIR`, `~/.claude`, and each Paseo provider
-  profile whose environment sets `CLAUDE_CONFIG_DIR` (separate accounts), deduplicated by physical path.
-- **Project navigation**: sessions grouped by Claude project directory, labelled with the recorded
-  working directory, with per-project counts that follow the active search.
-- **Full-text search** over titles, prompts, and Claude's replies (AND of all words), plus session ID,
-  path, and branch. Results show the matching snippet.
-- **Filters and sorting**: status (in use / idle), health (healthy / damaged / empty), origin
-  (started in Paseo / native), sort by last activity, start, size, messages, or title; pagination.
-- **Details**: title source, working directory, branch, timing, message counts, size, Claude Code
-  version, models, the exact files a delete would move, duplicate session IDs, resumed or forked
-  copies (sessions that share message UUIDs), and a short conversation preview.
-- **Resume command** with correct shell quoting, `cd` into the recorded directory, and
-  `CLAUDE_CONFIG_DIR=` for non-default directories. One-tap copy.
-- **Single and bulk delete** with a host-side preview, a confirmation dialog, and per-session results.
-- **Trash**: restore (all-or-nothing per session), permanent delete of selected entries, or empty
-  the trash, each with confirmation.
-- **Paseo native**: a screen with Paseo's host picker, a sidebar row, a Command Center item, theme
-  tokens for light and dark themes, responsive three-, two-, and one-column layouts, Paseo modals
-  (bottom sheets on phones), toasts, and clipboard.
-- **Simplified Chinese and English**, following the Paseo app language.
+- 🗂️ **Every Claude directory**: `~/.claude`, `CLAUDE_CONFIG_DIR`, and Paseo provider profiles, including sessions started outside Paseo.
+- 🔎 **Find anything**: group by project, search titles, prompts and replies, then filter, sort and page through the results.
+- 📋 **Details at a glance**: branch, timing, models, size, files on disk, forks and duplicate IDs, and a one-tap `claude --resume` command.
+- 🗑️ **Safe delete**: preview, then confirm. Deleted sessions go to a trash you can restore from, and they drop out of `/resume`.
+- 🛡️ **Protected while in use**: sessions held by a live Claude Code process, a running Paseo agent, or a write in the last 90 s are skipped.
+- 🌐 **Every host**: each Paseo host scans and keeps its own trash. Switch hosts with Paseo's host picker.
+- 🎨 **Native look**: Paseo theme colors in light and dark, layouts for desktop and phone, English and 简体中文.
 
 ## Install
 
-Requires **Paseo 0.13.0 or later** on both the daemon and the app (plugin translations, screens, and
-the `client/ui` kit). Plugins must be enabled under **Settings → Plugins**.
-
-Install on each host whose sessions you want to manage (the plugin runs on that host's daemon):
+Requires Paseo **0.13.0+**, with **Settings → Plugins → Enable plugins** turned on. Install on every host you want to manage:
 
 ```bash
-paseo plugin add git:jjayjackie/paseo-plugins:claude-session-manager
-# a specific release or branch
-paseo plugin add git:jjayjackie/paseo-plugins:claude-session-manager --ref claude-session-manager-v0.1.0
-# a remote daemon
-paseo --host <url> plugin add git:jjayjackie/paseo-plugins:claude-session-manager
+paseo plugin add git:jjayjackie/paseo-claude-session-manager
+paseo --host <url> plugin add git:jjayjackie/paseo-claude-session-manager   # a remote host
 ```
 
-Or download `claude-session-manager-<version>.tar.gz` from the
-[releases](https://github.com/jjayjackie/paseo-plugins/releases), extract it on the daemon machine,
-and run `paseo plugin install /absolute/path/to/claude-session-manager`. You can also paste either
-source into **Settings → Plugins → Plugin source**.
+Then open **Claude sessions** in the sidebar, or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
 
-The plugin has no runtime dependencies; Paseo supplies React, React Native, TanStack Query, Zod, and
-the SDK. Check `paseo plugin ls` for `running`, then open **Claude sessions** in the sidebar or from
-the Command Center (⌘K / Ctrl+K).
+<details>
+<summary>Install from a release archive instead</summary>
 
-## What a delete touches
+```bash
+curl -LO https://github.com/jjayjackie/paseo-claude-session-manager/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/jjayjackie/paseo-claude-session-manager/releases/download/v0.1.0/claude-session-manager-0.1.0.tar.gz
+shasum -a 256 -c SHA256SUMS.txt --ignore-missing
+mkdir -p ~/paseo-plugins && tar -xzf claude-session-manager-0.1.0.tar.gz -C ~/paseo-plugins
+paseo plugin install ~/paseo-plugins/claude-session-manager
+paseo plugin ls   # should report "running"
+```
 
-A delete moves these, and only these, into the trash:
+</details>
 
-| Location (inside the Claude directory) | When |
+## How deleting works
+
+```mermaid
+flowchart LR
+  A[Select sessions] --> B[Host previews<br/>files + fingerprint]
+  B --> C{In use?}
+  C -- yes --> D[Skipped with a reason]
+  C -- no --> E[Confirm]
+  E --> F{Changed since preview?}
+  F -- yes --> D
+  F -- no --> G[Moved to trash<br/>removed from /resume]
+  G --> H[Restore] & I[Delete permanently]
+```
+
+| Moved to the trash | Never touched |
 | --- | --- |
-| `projects/<dir>/<id>.jsonl` | always (the transcript `/resume` lists) |
-| `projects/<dir>/<id>/` | when present (subagent transcripts, tool results) |
-| `projects/<dir>/agent-*.jsonl` whose `sessionId` is `<id>` | older subagent layout |
-| `todos/<id>.json`, `todos/<id>-agent-*.json`, `file-history/<id>/`, `session-env/<id>/`, `debug/<id>.txt`, `tasks/<id>/` | only when no other transcript in the same directory uses the same session ID |
+| `projects/<dir>/<id>.jsonl` and `projects/<dir>/<id>/`<br/>older `agent-*.jsonl` subagents<br/>`todos/`, `file-history/`, `session-env/`, `debug/`, `tasks/` entries for that ID¹ | settings, credentials, `history.jsonl`<br/>`CLAUDE.md`, skills, plugins, MCP config<br/>project `memory/`, your source code |
 
-If `projects/<dir>/sessions-index.json` exists (a `/resume` summary cache in some Claude Code
-versions), the session's entries are removed from it and put back on restore; unknown fields are
-kept and an unreadable index is left alone. Claude Code builds `/resume` from the transcripts, so a
-trashed session no longer appears there.
+¹ Kept while another transcript still uses the same session ID.
 
-Never touched: `settings*.json`, `.credentials.json`, `~/.claude.json`, `history.jsonl` (prompt
-history shared by all sessions and appended to concurrently), `CLAUDE.md`, `skills/`, `plugins/`,
-`agents/`, `commands/`, MCP configuration, `projects/<dir>/memory/`, and anything outside the
-Claude directory, including your source code.
+The trash is stored on the same host in `$PASEO_HOME/plugin-data/claude-session-manager/trash/`. Paths are allowlisted, symbolic links are never followed, and only one change runs at a time on each host.
 
-The trash lives on the same host at `$PASEO_HOME/plugin-data/claude-session-manager/trash/`
-(mode `0700`). Each entry holds the moved files and a manifest of their original relative paths.
+## Multiple hosts
 
-## Safety model
+```mermaid
+flowchart LR
+  App[Paseo app] -- host picker --> H1[Host A daemon<br/>scan · trash] & H2[Host B daemon<br/>scan · trash]
+  H1 --- C1[(~/.claude)]
+  H2 --- C2[(~/.claude)]
+```
 
-- **Server-side only.** The app sends opaque session keys; the daemon resolves them against its own
-  scan. No client-supplied path ever reaches the filesystem.
-- **Fixed allowlist.** Paths are computed from the table above and must sit below a managed
-  top-level folder (`projects`, `todos`, `file-history`, `session-env`, `debug`, `tasks`). Symbolic
-  links are never followed or moved; a top-level folder that is itself a link (for example
-  `projects` on another disk) is supported.
-- **Running sessions are protected.** A delete is refused while Claude Code's process registry
-  (`<config dir>/sessions/<pid>.json`) names the session and the process is alive, while a Paseo
-  agent bound to it is running or initializing, or within 90 seconds of its last write.
-- **Preview fingerprint.** Confirming sends back a fingerprint of the files the preview listed; if
-  anything changed in between (the session was resumed, another client deleted it), the session is
-  skipped with "changed" or "not found".
-- **One mutation at a time per host**, so concurrent clients cannot interleave deletes and restores.
-- **Transactional moves.** A failure part-way through moves already-moved files back. Restores check
-  every target first and never overwrite; an edited manifest cannot write outside a configured
-  Claude directory.
-- **Duplicate session IDs** (a transcript copied to another project directory) are listed
-  separately; shared per-ID files stay until the last copy is deleted. Sessions that share message
-  UUIDs (resumed or forked copies) are shown as related; each transcript is self-contained, so
-  deleting one never affects another.
-- **Damaged transcripts** (unparseable lines) are flagged, counted, and still listable, deletable,
-  and restorable.
-- Search text is held in memory only, never written to disk, and dropped when a transcript disappears.
-
-## Remote hosts
-
-Paseo installs plugins per daemon. With the plugin on several hosts, the screen header shows Paseo's
-host picker; the selected host runs every scan, read, delete, and restore through the official
-plugin RPC, and each host has its own catalog and trash. The UI remounts when the host changes,
-query keys include the host ID, and an offline host shows its last data with a banner instead of
-falling through to another host. After a reconnect, polling and Paseo's retained query cache
-refresh the view. No extra server or port is opened.
-
-## SDK usage and compatibility
-
-Everything uses the public Paseo plugin SDK: `addScreen`, `addSidebarHeaderItem`,
-`addCommandCenterItem`, `defineRpc` / `server.handle` / `useRpc`, `useHosts`,
-`defineTranslations` / `useTranslation` / `messages.message`, and `Icon`, `Modal`, `ScrollView`,
-`TextInput`, `useToast`, `copyText`, `SidebarRow` from `@getpaseo/plugin/client/ui`.
-
-Gaps and the approach taken:
-
-- **No locale-aware date API in the SDK.** Dates use `Intl.DateTimeFormat` / `Intl.RelativeTimeFormat`
-  with the locale reported by `useTranslation`.
-- **No checkbox, select, or badge components in the SDK.** They are built from React Native
-  primitives, colored only with `theme.colors`, and the select opens Paseo's `Modal`.
-- **No live "is this agent running" lookup by Claude session ID.** Running state comes from Claude
-  Code's process registry plus Paseo's agent records on disk (the approach upstream `session-usage`
-  uses), with the 90-second write window as a fallback.
-- **Plugin RPC has no cross-host form**, so the plugin relies on Paseo's host picker instead of
-  aggregating hosts; install it on each host.
-- `useSubscription` (push updates) exists only from Paseo 0.16, so the screen polls (every 30 s,
-  every 1.5 s during the first scan) to stay compatible with 0.13.
+All work runs on the selected host through Paseo's plugin RPC. The plugin opens no extra ports. Data from one host is never shown for another, and an offline host keeps its last view until it reconnects.
 
 ## Development
 
-Builds, installs, typechecks, lint, tests, audits, and packaging run only in
-[GitHub Actions](../.github/workflows/claude-session-manager.yml) on GitHub-hosted runners:
+Installs, type checks, linting, tests, bundling and releases all run in [GitHub Actions](./.github/workflows/ci.yml) on GitHub-hosted runners. Tags `v*` publish a [release](https://github.com/jjayjackie/paseo-claude-session-manager/releases). Tests use synthetic sessions only. Things CI cannot check, such as rendering in the app, host switching and `/resume` in a real Claude Code, need a manual pass.
 
-| Step | Command |
-| --- | --- |
-| Boundary and safety audit (runtime boundaries, DOM use, hardcoded colors, secrets, transcripts) | `npm run audit` |
-| Typecheck, client and server separately | `npm run typecheck` |
-| ESLint (TypeScript, React hooks) | `npm run lint` |
-| Tests with synthetic sessions in temporary directories | `npm test` |
-| esbuild bundle of both entries, as Paseo compiles plugins | `npm run bundle:check` |
-| Runtime dependency audit | `npm audit --omit=dev` |
-| CodeQL | separate job |
+## Acknowledgements
 
-Pushes and pull requests run the matrix (Ubuntu with Node 22 and 24, macOS with Node 22). A passing
-run uploads the packaged plugin. Pushing a tag `claude-session-manager-v<version>` that matches
-`package.json` publishes a GitHub release with the archives and `SHA256SUMS.txt`.
-
-The tests cover listing, parsing, search, filters, pagination, the exact file set a delete moves,
-untouched configuration and source files, byte-identical restore, restore conflicts, running,
-recent, and Paseo-agent protection, preview fingerprints, concurrent deletes, duplicate IDs, forked
-copies, symbolic links, tampered manifests, unknown directories, input validation, host isolation,
-root discovery, resume quoting, and translation resources.
-
-### Not verifiable in CI
-
-These need a real Paseo app and daemon and are verified by hand:
-
-- rendering in the Paseo app on desktop, web, iOS, and Android, in light and dark themes;
-- the host picker with two or more hosts, and an offline host and reconnect;
-- the language switch between English and Simplified Chinese in a running app;
-- `/resume` in a real Claude Code install no longer listing a trashed session, and listing it again
-  after restore;
-- detection through a real Claude Code process registry and live Paseo agents.
-
-## Limitations
-
-- Only Claude Code sessions are managed; other providers are out of scope.
-- `history.jsonl` (the up-arrow prompt history) keeps prompts of deleted sessions by design.
-- The trash does not expire automatically; empty it from the Trash tab.
-- Full-text search indexes up to 256 KB of prompts and replies per session; tool output is not indexed.
+- Built on [**Session usage**](https://paseo.sh/plugins/panrafal/session-usage) from [panrafal/paseo-plugins](https://github.com/panrafal/paseo-plugins) (MIT). Claude directory discovery and the Paseo agent-record reader are adapted from it.
+- [Paseo](https://github.com/getpaseo/paseo) and its [plugin guide](https://paseo.sh/docs/plugins), [SDK reference](https://paseo.sh/docs/plugins/reference) and [plugin registry](https://github.com/getpaseo/plugins).
 
 ## License
 
-MIT. See [LICENSE](./LICENSE). Original work © panrafal; this plugin © jjayjackie.
+[MIT](./LICENSE). © panrafal (original work) and jjayjackie.
