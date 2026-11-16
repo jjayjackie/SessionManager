@@ -7,5 +7,5 @@ Claude session manager for Paseo: browse, search, delete, and restore native Cla
 - Updates `sessions-index.json` so trashed sessions leave `/resume`; never touches settings, credentials, history, skills, MCP, memory, or source.
 - English and Simplified Chinese. Requires Paseo 0.13.0 or later.
 
-Install: `paseo plugin add git:jjayjackie/paseo-plugins:claude-session-manager`, or extract the archive below on the daemon machine and run `paseo plugin install <path>`.
+Install: `paseo plugin add git:jjayjackie/paseo-claude-session-manager`, or extract the archive below on the daemon machine and run `paseo plugin install <path>`.
 Verify downloads with `SHA256SUMS.txt`.

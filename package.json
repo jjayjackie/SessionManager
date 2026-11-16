@@ -37,13 +37,12 @@
   "contributors": [
     "panrafal (upstream paseo-plugins / session-usage)"
   ],
-  "homepage": "https://github.com/jjayjackie/paseo-plugins/tree/main/claude-session-manager",
+  "homepage": "https://github.com/jjayjackie/paseo-claude-session-manager",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jjayjackie/paseo-plugins.git",
-    "directory": "claude-session-manager"
+    "url": "git+https://github.com/jjayjackie/paseo-claude-session-manager.git"
   },
   "bugs": {
-    "url": "https://github.com/jjayjackie/paseo-plugins/issues"
+    "url": "https://github.com/jjayjackie/paseo-claude-session-manager/issues"
   }
 }
