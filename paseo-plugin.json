@@ -1,0 +1,12 @@
+{
+  "id": "claude-session-manager",
+  "name": "Claude session manager",
+  "description": "Browse, search, delete, and restore native Claude Code session history on each Paseo host.",
+  "translations": {
+    "zh-CN": {
+      "name": "Claude 会话管理器",
+      "description": "在每台 Paseo 主机上浏览、搜索、删除和恢复 Claude Code 原生历史会话。"
+    }
+  },
+  "requirements": { "paseo": ">=0.13.0" }
+}

@@ -1,0 +1,49 @@
+{
+  "name": "claude-session-manager",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Paseo plugin that browses, searches, deletes, and restores native Claude Code session history on each host.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
+    "lint": "eslint .",
+    "test": "node --import tsx --test --test-reporter=spec server/*.test.ts",
+    "audit": "node scripts/audit-boundaries.mjs",
+    "bundle:check": "node scripts/bundle-check.mjs",
+    "stage": "node scripts/stage.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@getpaseo/client": "0.16.0",
+    "@getpaseo/plugin": "0.16.0",
+    "@getpaseo/protocol": "0.16.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/node": "^24.0.0",
+    "@types/react": "~19.2.0",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.0",
+    "zod": "^4.4.3"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "author": "jjayjackie",
+  "contributors": [
+    "panrafal (upstream paseo-plugins / session-usage)"
+  ],
+  "homepage": "https://github.com/jjayjackie/paseo-plugins/tree/main/claude-session-manager",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jjayjackie/paseo-plugins.git",
+    "directory": "claude-session-manager"
+  },
+  "bugs": {
+    "url": "https://github.com/jjayjackie/paseo-plugins/issues"
+  }
+}
