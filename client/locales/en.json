@@ -1,8 +1,8 @@
 {
   "app": {
-    "title": "Claude sessions",
-    "open": "Open Claude sessions",
-    "sidebar": "Claude sessions"
+    "title": "ClaudeSession",
+    "open": "Open ClaudeSession",
+    "sidebar": "ClaudeSession"
   },
   "host": {
     "online": "Online",

@@ -1,22 +1,22 @@
 <div align="center">
 
-# Claude session manager
+# ClaudeSession
 
 **Browse, search, delete and restore native Claude Code sessions from [Paseo](https://paseo.sh).**
 
 English · [简体中文](./README.zh-CN.md)
 
-[![CI](https://github.com/jjayjackie/paseo-claude-session-manager/actions/workflows/ci.yml/badge.svg)](https://github.com/jjayjackie/paseo-claude-session-manager/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/jjayjackie/paseo-claude-session-manager)](https://github.com/jjayjackie/paseo-claude-session-manager/releases)
+[![CI](https://github.com/jjayjackie/ClaudeSession/actions/workflows/ci.yml/badge.svg)](https://github.com/jjayjackie/ClaudeSession/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/jjayjackie/ClaudeSession)](https://github.com/jjayjackie/ClaudeSession/releases)
 [![Paseo](https://img.shields.io/badge/Paseo-%E2%89%A50.13.0-6e7bff)](https://paseo.sh)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](./LICENSE)
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./docs/images/screen-en-dark.svg">
-  <img alt="Claude session manager: projects on the left, sessions in the middle, details on the right" src="./docs/images/screen-en-light.svg" width="100%">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/screenshots/sessions-en-dark.png">
+  <img alt="ClaudeSession: projects on the left, sessions in the middle, details on the right" src="./assets/screenshots/sessions-en-light.png" width="100%">
 </picture>
 
-<sub>Illustration with sample data.</sub>
+<sub>Screenshot with sample data.</sub>
 
 </div>
 
@@ -35,20 +35,20 @@ English · [简体中文](./README.zh-CN.md)
 Requires Paseo **0.13.0+**, with **Settings → Plugins → Enable plugins** turned on. Install on every host you want to manage:
 
 ```bash
-paseo plugin add git:jjayjackie/paseo-claude-session-manager
-paseo --host <url> plugin add git:jjayjackie/paseo-claude-session-manager   # a remote host
+paseo plugin add git:jjayjackie/ClaudeSession
+paseo --host <url> plugin add git:jjayjackie/ClaudeSession   # a remote host
 ```
 
-Then open **Claude sessions** in the sidebar, or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
+Then open **ClaudeSession** in the sidebar, or press <kbd>⌘K</kbd> / <kbd>Ctrl+K</kbd>.
 
 <details>
 <summary>Install from a release archive instead</summary>
 
 ```bash
-curl -LO https://github.com/jjayjackie/paseo-claude-session-manager/releases/latest/download/SHA256SUMS.txt
-curl -LO https://github.com/jjayjackie/paseo-claude-session-manager/releases/download/v0.1.0/claude-session-manager-0.1.0.tar.gz
+curl -LO https://github.com/jjayjackie/ClaudeSession/releases/latest/download/SHA256SUMS.txt
+curl -LO https://github.com/jjayjackie/ClaudeSession/releases/download/v0.1.1/claude-session-manager-0.1.1.tar.gz
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-mkdir -p ~/paseo-plugins && tar -xzf claude-session-manager-0.1.0.tar.gz -C ~/paseo-plugins
+mkdir -p ~/paseo-plugins && tar -xzf claude-session-manager-0.1.1.tar.gz -C ~/paseo-plugins
 paseo plugin install ~/paseo-plugins/claude-session-manager
 paseo plugin ls   # should report "running"
 ```
@@ -90,7 +90,7 @@ All work runs on the selected host through Paseo's plugin RPC. The plugin opens 
 
 ## Development
 
-Installs, type checks, linting, tests, bundling and releases all run in [GitHub Actions](./.github/workflows/ci.yml) on GitHub-hosted runners. Tags `v*` publish a [release](https://github.com/jjayjackie/paseo-claude-session-manager/releases). Tests use synthetic sessions only. Things CI cannot check, such as rendering in the app, host switching and `/resume` in a real Claude Code, need a manual pass.
+Installs, type checks, linting, tests, bundling and releases all run in [GitHub Actions](./.github/workflows/ci.yml) on GitHub-hosted runners. Tags `v*` publish a [release](https://github.com/jjayjackie/ClaudeSession/releases). Tests use synthetic sessions only. Things CI cannot check, such as rendering in the app, host switching and `/resume` in a real Claude Code, need a manual pass.
 
 ## Acknowledgements
 

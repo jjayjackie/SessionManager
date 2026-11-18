@@ -6,7 +6,7 @@ const root = new URL("..", import.meta.url).pathname;
 const target = join(root, "dist", "claude-session-manager");
 await rm(join(root, "dist"), { recursive: true, force: true });
 await mkdir(target, { recursive: true });
-const include = ["paseo-plugin.json", "package.json", "tsconfig.json", "tsconfig.server.json", "index.client.tsx", "index.server.ts", "README.md", "README.zh-CN.md", "OVERVIEW.md", "OVERVIEW.zh-CN.md", "LICENSE", "client", "server", "shared"];
+const include = ["paseo-plugin.json", "package.json", "tsconfig.json", "tsconfig.server.json", "index.client.tsx", "index.server.ts", "README.md", "README.zh-CN.md", "assets", "OVERVIEW.md", "OVERVIEW.zh-CN.md", "LICENSE", "client", "server", "shared"];
 for (const entry of include) {
   await cp(join(root, entry), join(target, entry), {
     recursive: true,

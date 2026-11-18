@@ -131,6 +131,6 @@ jobs:
         run: |
           gh release create "${GITHUB_REF_NAME}" release/* \
             --repo "${GITHUB_REPOSITORY}" \
-            --title "Claude session manager ${GITHUB_REF_NAME#v}" \
+            --title "ClaudeSession ${GITHUB_REF_NAME#v}" \
             --notes-file RELEASE_NOTES.md \
             --verify-tag

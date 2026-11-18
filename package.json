@@ -1,7 +1,7 @@
 {
   "name": "claude-session-manager",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Paseo plugin that browses, searches, deletes, and restores native Claude Code session history on each host.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
@@ -37,12 +37,12 @@
   "contributors": [
     "panrafal (upstream paseo-plugins / session-usage)"
   ],
-  "homepage": "https://github.com/jjayjackie/paseo-claude-session-manager",
+  "homepage": "https://github.com/jjayjackie/ClaudeSession",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jjayjackie/paseo-claude-session-manager.git"
+    "url": "git+https://github.com/jjayjackie/ClaudeSession.git"
   },
   "bugs": {
-    "url": "https://github.com/jjayjackie/paseo-claude-session-manager/issues"
+    "url": "https://github.com/jjayjackie/ClaudeSession/issues"
   }
 }

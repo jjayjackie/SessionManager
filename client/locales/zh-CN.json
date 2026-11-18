@@ -1,8 +1,8 @@
 {
   "app": {
-    "title": "Claude 会话",
-    "open": "打开 Claude 会话管理",
-    "sidebar": "Claude 会话"
+    "title": "ClaudeSession",
+    "open": "打开 ClaudeSession",
+    "sidebar": "ClaudeSession"
   },
   "host": {
     "online": "在线",
