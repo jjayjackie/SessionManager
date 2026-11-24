@@ -1,11 +1,13 @@
-SessionManager for Paseo: browse, search, delete, and restore native Claude Code, Codex, and Antigravity sessions on each host.
+SessionManager 0.2.1 for Paseo: official brand logos, brand-matched accents, and cleaner Antigravity session discovery.
 
-- Renamed from ClaudeSession (`claude-session-manager`) to SessionManager (`session-manager`).
-- Added native **Codex** session support: scans `$CODEX_HOME`, `~/.codex`, and Paseo provider profiles (`sessions/` and `archived_sessions/` rollouts), parses prompts/replies/models/branch/version, generates `codex resume` commands, syncs `session_index.jsonl`, and safely trashes/restores rollout + capability + shell snapshot artifacts.
-- Added native **Antigravity** session support: scans `$ANTIGRAVITY_DATA_DIR`, `$ANTIGRAVITY_CLI_DIR`, `~/.gemini/antigravity-cli`, `~/.gemini/antigravity`, and Paseo provider profiles, parses `conversation_metadata.json` and `brain/<id>/.system_generated/logs/transcript.jsonl`, detects active SQLite WAL locks, generates `agy --conversation` commands, syncs cache metadata, and safely trashes/restores conversation DB + brain + annotation + presence files.
-- Unified cross-provider project grouping: sessions from Claude Code, Codex, and Antigravity sharing the same working directory merge into a single project entry with per-provider indicators.
-- Redesigned Paseo client UI in a clean industrial style: compact top command bar, live telemetry strip, provider segmented filter with counts, tight hairline borders, monospace metadata spec sheet, 2×2 metric cards, and structured conversation preview — 100% built from Paseo theme tokens.
-- Updated README (with centered top icon), registry overviews, and English / Simplified Chinese translations. Requires Paseo 0.13.0 or later.
+- Replaced text provider tags and generic colored dots with official inline SVG logos and signature brand colors across the provider switcher, unified project rail, session list, inspector header, conversation preview, trash view, and delete dialog:
+  - **Claude Code**: Anthropic starburst (`#D97757`)
+  - **Codex**: OpenAI knot (`#10A37F`)
+  - **Antigravity**: Google Antigravity arch (`#4285F4`)
+- Adapted to Antigravity's native storage lifecycle:
+  - Reads `conversation_summaries.db` (read-only via built-in `node:sqlite` when available) merged with `cache/conversation_metadata.json` so workspace directories and titles stay accurate even before the JSON cache flushes.
+  - Automatically skips Antigravity's pre-allocated 0-step empty placeholder shells (384 KB DBs created on workspace startup before any prompt is sent) and internal trajectories so phantom untitled sessions no longer clutter the list or project sidebar.
+- Added SVG asset safety checks to `scripts/audit-boundaries.mjs` and `.svg` text bundling to `scripts/bundle-check.mjs` matching Paseo's plugin compiler.
 
 Install: `paseo plugin add git:jjayjackie/SessionManager`, or extract the archive below on the daemon machine and run `paseo plugin install <path>`.
 Verify downloads with `SHA256SUMS.txt`.
