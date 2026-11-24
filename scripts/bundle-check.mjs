@@ -2,7 +2,7 @@
 // imports and runtime-boundary mistakes that a typecheck cannot see. Output is discarded.
 import { build } from "esbuild";
 
-const shared = { bundle: true, write: false, logLevel: "warning", absWorkingDir: new URL("..", import.meta.url).pathname, loader: { ".json": "json" } };
+const shared = { bundle: true, write: false, logLevel: "warning", absWorkingDir: new URL("..", import.meta.url).pathname, loader: { ".json": "json", ".svg": "text" } };
 const client = await build({
   ...shared,
   entryPoints: ["index.client.tsx"],

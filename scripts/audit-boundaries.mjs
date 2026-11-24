@@ -25,7 +25,8 @@ const importsOf = (source) => [...source.matchAll(/(?:import|export)\s[^"']*?fro
 for (const path of files) {
   const name = rel(path);
   const isCode = /\.(ts|tsx|mjs|js)$/.test(name);
-  const source = isCode || /\.(json|md|yml|yaml)$/.test(name) ? await readFile(path, "utf8") : "";
+  const isSvg = name.endsWith(".svg");
+  const source = isCode || isSvg || /\.(json|md|yml|yaml)$/.test(name) ? await readFile(path, "utf8") : "";
   const area = name.startsWith("client/") || name === "index.client.tsx" ? "client" : name.startsWith("server/") || name === "index.server.ts" ? "server" : name.startsWith("shared/") ? "shared" : "other";
 
   if (isCode && area !== "other") {
@@ -40,8 +41,18 @@ for (const path of files) {
   if (area === "client" && isCode && !name.endsWith("client/web.ts")) {
     const dom = source.match(/\b(document|window|localStorage|sessionStorage|navigator)\.|\bonClick=|\bclassName=|<(div|span|button|input|a|p)[\s>]/);
     if (dom) findings.push(`${name}: DOM API or HTML element "${dom[0]}" outside client/web.ts`);
-    const color = source.match(/["'](#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))["']/);
-    if (color) findings.push(`${name}: hardcoded color ${color[1]}; use theme.colors`);
+    // Official provider brand colors live only in client/icons/brands.ts; all UI colors use theme.colors.
+    if (name !== "client/icons/brands.ts") {
+      const color = source.match(/["'](#[0-9a-fA-F]{3,8}|rgba?\([^)]*\))["']/);
+      if (color) findings.push(`${name}: hardcoded color ${color[1]}; use theme.colors`);
+    }
+  }
+  // Validate inline SVG icons against Paseo's findSvgIconProblem contract.
+  if (area === "client" && isSvg) {
+    if (Buffer.byteLength(source, "utf8") > 64 * 1024) findings.push(`${name}: SVG exceeds 64 KiB`);
+    if (!/^\s*<svg(?:\s|>)/i.test(source)) findings.push(`${name}: not an SVG document`);
+    if (/<(script|style|foreignObject)(?:\s|>)/i.test(source)) findings.push(`${name}: forbidden SVG element`);
+    if (/\son[a-z0-9_-]*\s*=/i.test(source) || /javascript\s*:/i.test(source)) findings.push(`${name}: unsafe SVG attribute or URL`);
   }
   // Secrets and real session data must never be committed.
   if (/(sk-ant-[A-Za-z0-9_-]{10,}|github_pat_[A-Za-z0-9_]{20,}|ghp_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|-----BEGIN [A-Z ]*PRIVATE KEY-----)/.test(source)) findings.push(`${name}: looks like a secret`);
