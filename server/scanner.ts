@@ -302,10 +302,17 @@ export class Scanner {
       }
       const allIds = new Set([...dbFiles.keys(), ...brainDirs.keys()]);
       for (const sessionId of allIds) {
+        const meta = metadata.get(sessionId);
+        if (meta?.internal) continue;
         const brainDir = brainDirs.get(sessionId) ?? null;
         const transcriptFile = brainDir ? await info(join(brainDir, ".system_generated", "logs", "transcript.jsonl"), false) : null;
         const annotationFile = await info(join(root.real, "annotations", `${sessionId}.pbtxt`), false);
         const presenceFile = await info(join(root.real, "presence", `${sessionId}.lock`), false);
+        // Antigravity eagerly pre-allocates 0-step empty SQLite shells (384 KB) whenever `agy` or
+        // an ACP host opens a workspace, even if no prompt is ever sent. Skip those unstarted shells
+        // so they do not pollute the session list or create phantom project entries.
+        const hasActivity = Boolean(transcriptFile || annotationFile || (meta && (meta.numSteps > 0 || meta.title || meta.preview)));
+        if (!hasActivity) continue;
         if (transcriptFile) seenPaths.add(transcriptFile.path);
         pending.push({
           kind: "antigravity",
@@ -316,7 +323,7 @@ export class Scanner {
           transcriptFile,
           annotationFile,
           presenceFile,
-          meta: metadata.get(sessionId),
+          meta,
         });
       }
     }
