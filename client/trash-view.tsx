@@ -8,7 +8,7 @@ import type { OperationOutput, TrashEntry } from "../shared/schema";
 import { usePurge, useRestore, useTrash } from "./data";
 import { errorText, formatDateTime } from "./format";
 import { messages } from "./messages";
-import { Badge, Banner, Button, Checkbox } from "./ui";
+import { Badge, Banner, Button, Checkbox, ProviderTag } from "./ui";
 
 interface Props {
   theme: PluginTheme;
@@ -75,17 +75,26 @@ export function TrashView({ theme, hostId, compact }: Props) {
 
   if (trash.isPending) {
     return (
-      <View style={{ padding: 24, alignItems: "center" }}>
+      <View style={{ padding: 28, alignItems: "center" }}>
         <ActivityIndicator color={c.foregroundMuted} />
       </View>
     );
   }
 
   return (
-    <View style={{ gap: 12, padding: compact ? 10 : 16 }}>
+    <View style={{ gap: 12, padding: compact ? 12 : 16 }}>
       {trash.isError ? <Banner theme={theme} tone="danger" text={t("status.error", { message: errorText(trash.error) })} /> : null}
-      {trash.data ? <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("trash.location", { path: trash.data.path })}</Text> : null}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+      {trash.data ? (
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8, paddingHorizontal: 10, paddingVertical: 8, borderRadius: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}>
+          <Text selectable style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", flex: 1 }}>
+            {t("trash.location", { path: trash.data.path })}
+          </Text>
+          <Text style={{ color: c.foreground, fontSize: 11.5, fontFamily: "monospace", fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+            {formatBytes(trash.data.bytes)}
+          </Text>
+        </View>
+      ) : null}
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap", paddingHorizontal: 10, paddingVertical: 8, borderRadius: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1 }}>
         <Checkbox
           theme={theme}
           checked={allSelected}
@@ -94,13 +103,13 @@ export function TrashView({ theme, hostId, compact }: Props) {
           disabled={!entries.length}
           onToggle={() => setSelected(allSelected ? new Set() : new Set(entries.map((entry) => entry.trashId)))}
         />
-        <Text style={{ color: c.foregroundMuted, fontSize: 12, flex: 1 }}>{selected.size ? t("list.selected", { count: selected.size }) : t("trash.selectAll")}</Text>
+        <Text style={{ color: c.foregroundMuted, fontSize: 12, fontWeight: "600", flex: 1 }}>{selected.size ? t("list.selected", { count: selected.size }) : t("trash.selectAll")}</Text>
         <Button theme={theme} compact icon="RotateCcw" label={t("trash.restoreSelected")} disabled={!selected.size || busy} busy={restore.isPending} onPress={() => void runRestore([...selected])} />
         <Button theme={theme} compact icon="Trash2" variant="danger" label={t("trash.purgeSelected")} disabled={!selected.size || busy} onPress={() => setPurgeTarget({ ids: [...selected], all: false })} />
         <Button theme={theme} compact icon="Flame" variant="danger" label={t("trash.purgeAll")} disabled={!entries.length || busy} onPress={() => setPurgeTarget({ ids: [], all: true })} />
       </View>
       {entries.length ? (
-        <View style={{ borderWidth: 1, borderColor: c.border, borderRadius: 10, overflow: "hidden" }}>
+        <View style={{ borderWidth: 1, borderColor: c.border, borderRadius: 5, overflow: "hidden" }}>
           {entries.map((entry, index) => (
             <TrashRow
               key={entry.trashId}
@@ -117,8 +126,8 @@ export function TrashView({ theme, hostId, compact }: Props) {
           ))}
         </View>
       ) : (
-        <View style={{ alignItems: "center", padding: 40, gap: 10 }}>
-          <Icon name="Trash" size={28} color={c.foregroundMuted} />
+        <View style={{ alignItems: "center", padding: 44, gap: 10 }}>
+          <Icon name="Trash" size={26} color={c.foregroundMuted} />
           <Text style={{ color: c.foregroundMuted, fontSize: 13 }}>{t("trash.empty")}</Text>
         </View>
       )}
@@ -131,8 +140,8 @@ export function TrashView({ theme, hostId, compact }: Props) {
         }}
       >
         <Modal.Content>
-          <Text style={{ color: c.foreground, fontSize: 14 }}>{t("trash.purgeBody", { count: purgeEntries.length, size: formatBytes(purgeBytes) })}</Text>
-          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+          <Text style={{ color: c.foreground, fontSize: 13.5 }}>{t("trash.purgeBody", { count: purgeEntries.length, size: formatBytes(purgeBytes) })}</Text>
+          <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
             <Button theme={theme} label={t("delete.cancel")} disabled={purge.isPending} onPress={() => setPurgeTarget(null)} />
             <Button theme={theme} variant="danger" icon="Trash2" label={t("trash.purge")} busy={purge.isPending} disabled={!purgeEntries.length} onPress={() => void runPurge()} />
           </View>
@@ -142,33 +151,67 @@ export function TrashView({ theme, hostId, compact }: Props) {
   );
 }
 
-function TrashRow({ theme, entry, locale, last, selected, busy, onToggle, onRestore, onPurge }: { theme: PluginTheme; entry: TrashEntry; locale: string; last: boolean; selected: boolean; busy: boolean; onToggle(): void; onRestore(): void; onPurge(): void }) {
+function TrashRow({
+  theme,
+  entry,
+  locale,
+  last,
+  selected,
+  busy,
+  onToggle,
+  onRestore,
+  onPurge,
+}: {
+  theme: PluginTheme;
+  entry: TrashEntry;
+  locale: string;
+  last: boolean;
+  selected: boolean;
+  busy: boolean;
+  onToggle(): void;
+  onRestore(): void;
+  onPurge(): void;
+}) {
   const { t } = useTranslation(messages);
   const c = theme.colors;
   const title = entry.title || entry.sessionId || entry.trashId;
   return (
-    <View style={{ flexDirection: "row", gap: 10, padding: 12, alignItems: "flex-start", borderBottomWidth: last ? 0 : 1, borderBottomColor: c.border, backgroundColor: selected ? c.surface1 : "transparent", flexWrap: "wrap" }}>
-      <View style={{ paddingTop: 2 }}>
+    <View
+      style={{
+        flexDirection: "row",
+        gap: 10,
+        padding: 12,
+        alignItems: "flex-start",
+        borderBottomWidth: last ? 0 : 1,
+        borderBottomColor: c.border,
+        backgroundColor: selected ? c.surface1 : "transparent",
+        flexWrap: "wrap",
+      }}
+    >
+      <View style={{ paddingTop: 3 }}>
         <Checkbox theme={theme} checked={selected} label={t("list.select", { title })} onToggle={onToggle} />
       </View>
       <View style={{ flex: 1, minWidth: 200, gap: 4 }}>
-        <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 14, fontWeight: "600" }}>
-          {title}
-        </Text>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <ProviderTag theme={theme} provider={entry.provider} />
+          <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>
+            {title}
+          </Text>
+        </View>
         {entry.cwd ? (
-          <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12 }}>
+          <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace" }}>
             {entry.cwd}
           </Text>
         ) : null}
         <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("trash.deletedAt", { date: formatDateTime(entry.deletedAt, locale) })}</Text>
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("trash.files", { count: entry.files })}</Text>
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{formatBytes(entry.bytes)}</Text>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace" }}>{t("trash.deletedAt", { date: formatDateTime(entry.deletedAt, locale) })}</Text>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontVariant: ["tabular-nums"] }}>{t("trash.files", { count: entry.files })}</Text>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>{formatBytes(entry.bytes)}</Text>
           {entry.status === "incomplete" ? <Badge theme={theme} tone="warning" label={t("trash.incomplete")} /> : null}
           {entry.status === "invalid" ? <Badge theme={theme} tone="danger" label={t("trash.invalid")} /> : null}
         </View>
       </View>
-      <View style={{ flexDirection: "row", gap: 8 }}>
+      <View style={{ flexDirection: "row", gap: 6 }}>
         <Button theme={theme} compact icon="RotateCcw" label={t("trash.restore")} disabled={busy || entry.status === "invalid"} onPress={onRestore} />
         <Button theme={theme} compact iconOnly icon="Trash2" variant="danger" label={t("trash.purge")} disabled={busy} onPress={onPurge} />
       </View>

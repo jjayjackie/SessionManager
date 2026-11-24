@@ -7,7 +7,7 @@ import type { OperationOutput } from "../shared/schema";
 import { useDeletePreview, useDeleteSessions } from "./data";
 import { errorText } from "./format";
 import { messages } from "./messages";
-import { Banner, Button } from "./ui";
+import { Banner, Button, ProviderTag } from "./ui";
 
 interface Props {
   theme: PluginTheme;
@@ -64,44 +64,71 @@ export function DeleteDialog({ theme, hostId, keys, onClose, onDeleted }: Props)
         ) : preview.isError || !data ? (
           <Banner theme={theme} tone="danger" text={t("status.error", { message: errorText(preview.error) })} />
         ) : (
-          <View style={{ gap: 14 }}>
+          <View style={{ gap: 12 }}>
             {deletable.length ? (
-              <Text style={{ color: c.foreground, fontSize: 14 }}>{t("delete.summary", { count: data.deletable, files: data.files, size: formatBytes(data.bytes) })}</Text>
+              <Text style={{ color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>
+                {t("delete.summary", { count: data.deletable, files: data.files, size: formatBytes(data.bytes) })}
+              </Text>
             ) : (
               <Banner theme={theme} tone="warning" text={t("delete.nothing")} />
             )}
             <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("delete.note")}</Text>
             {deletable.length && deletable.length <= 8 ? (
-              <View style={{ gap: 4 }}>
-                {deletable.map((item) => (
-                  <View key={item.key} style={{ flexDirection: "row", gap: 8, alignItems: "center" }}>
-                    <Icon name="MessageSquare" size={13} color={c.foregroundMuted} />
+              <View style={{ borderRadius: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
+                {deletable.map((item, index) => (
+                  <View
+                    key={item.key}
+                    style={{
+                      flexDirection: "row",
+                      gap: 8,
+                      alignItems: "center",
+                      paddingHorizontal: 10,
+                      paddingVertical: 7,
+                      borderBottomWidth: index === deletable.length - 1 ? 0 : 1,
+                      borderBottomColor: c.border,
+                    }}
+                  >
+                    <ProviderTag theme={theme} provider={item.provider} />
                     <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 12 }}>
                       {item.title || t("list.untitled")}
                     </Text>
-                    <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{formatBytes(item.bytes)}</Text>
+                    <Text style={{ color: c.foregroundMuted, fontSize: 11, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>{formatBytes(item.bytes)}</Text>
                   </View>
                 ))}
               </View>
             ) : null}
             {blocked.length ? (
               <View style={{ gap: 6 }}>
-                <Text style={{ color: c.statusWarning, fontSize: 12, fontWeight: "700" }}>
+                <Text style={{ color: c.statusWarning, fontSize: 11, fontWeight: "700", letterSpacing: 0.5, textTransform: "uppercase" }}>
                   {t("delete.skipped")} ({blocked.length})
                 </Text>
-                {blocked.slice(0, 20).map((item) => (
-                  <View key={item.key} style={{ gap: 1 }}>
-                    <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 12 }}>
-                      {item.title || item.key}
-                    </Text>
-                    {item.blocked ? <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t(`reason.${item.blocked}`)}</Text> : null}
-                  </View>
-                ))}
+                <View style={{ borderRadius: 5, borderWidth: 1, borderColor: c.border, backgroundColor: c.surface1, overflow: "hidden" }}>
+                  {blocked.slice(0, 20).map((item, index) => (
+                    <View
+                      key={item.key}
+                      style={{
+                        gap: 2,
+                        paddingHorizontal: 10,
+                        paddingVertical: 7,
+                        borderBottomWidth: index === Math.min(blocked.length, 20) - 1 ? 0 : 1,
+                        borderBottomColor: c.border,
+                      }}
+                    >
+                      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                        <ProviderTag theme={theme} provider={item.provider} />
+                        <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 12, fontWeight: "600" }}>
+                          {item.title || item.key}
+                        </Text>
+                      </View>
+                      {item.blocked ? <Text style={{ color: c.foregroundMuted, fontSize: 11.5 }}>{t(`reason.${item.blocked}`)}</Text> : null}
+                    </View>
+                  ))}
+                </View>
               </View>
             ) : null}
           </View>
         )}
-        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 10, flexWrap: "wrap" }}>
+        <View style={{ flexDirection: "row", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
           <Button theme={theme} label={t("delete.cancel")} onPress={onClose} disabled={remove.isPending} />
           <Button
             theme={theme}
