@@ -56,9 +56,9 @@ paseo --host <地址> plugin add git:jjayjackie/SessionManager   # 远程主机
 
 ```bash
 curl -LO https://github.com/jjayjackie/SessionManager/releases/latest/download/SHA256SUMS.txt
-curl -LO https://github.com/jjayjackie/SessionManager/releases/download/v0.2.1/session-manager-0.2.1.tar.gz
+curl -LO https://github.com/jjayjackie/SessionManager/releases/download/v0.2.2/session-manager-0.2.2.tar.gz
 shasum -a 256 -c SHA256SUMS.txt --ignore-missing
-mkdir -p ~/paseo-plugins && tar -xzf session-manager-0.2.1.tar.gz -C ~/paseo-plugins
+mkdir -p ~/paseo-plugins && tar -xzf session-manager-0.2.2.tar.gz -C ~/paseo-plugins
 paseo plugin install ~/paseo-plugins/session-manager
 paseo plugin ls   # 状态应为 running
 ```
