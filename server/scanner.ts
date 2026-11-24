@@ -9,7 +9,8 @@ import {
   type AntigravityMeta,
   type ParsedAntigravityTranscript,
 } from "./antigravity-parser";
-import { extractCodexSessionId, parseCodexRollout, readCodexSessionNames } from "./codex-parser";
+import { extractCodexSessionId, parseCodexRollout, readCodexMetadata, type CodexThreadMeta } from "./codex-parser";
+import { codexLockMtime } from "./live";
 import { firstSessionId, parseTranscript, type ParsedTranscript } from "./parser";
 import type { AgentRoot } from "./roots";
 import { SAFE_SEGMENT, toRelative, treeSize } from "./safety";
@@ -24,10 +25,11 @@ import { SAFE_SEGMENT, toRelative, treeSize } from "./safety";
  * - Codex:
  *     <root>/sessions/YYYY/MM/DD/rollout-<ts>-<session id>.jsonl
  *     <root>/archived_sessions/rollout-<ts>-<session id>.jsonl
+ *     <root>/state_*.sqlite (read-only metadata enrichment) + session_index.jsonl
  * - Antigravity:
  *     <root>/conversations/<conversation id>.db
  *     <root>/brain/<conversation id>/.system_generated/logs/transcript.jsonl
- *     <root>/cache/conversation_metadata.json
+ *     <root>/conversation_summaries.db (read-only) + cache/conversation_metadata.json
  */
 
 export const PROJECT_DIR = /^(?!\.\.?$)[A-Za-z0-9._-]{1,255}$/;
@@ -82,7 +84,7 @@ export interface ScanResult {
 export type Progress = (done: number, total: number) => void;
 
 const MAX_WARNINGS = 50;
-const PARSE_CONCURRENCY = 4;
+const PARSE_CONCURRENCY = 8;
 
 function errorCode(error: unknown): string {
   return (error as NodeJS.ErrnoException)?.code ?? "";
@@ -119,6 +121,15 @@ async function countJsonl(directory: string, depth = 0): Promise<number> {
   return count;
 }
 
+async function dirMtimeMs(path: string): Promise<number> {
+  try {
+    const info = await lstat(path);
+    return info.isDirectory() ? info.mtimeMs : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
   let next = 0;
   const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
@@ -147,7 +158,8 @@ interface PendingCodex {
   relDir: string;
   sessionId: string;
   transcript: FileInfo;
-  indexTitle: string;
+  lockMtimeMs: number;
+  meta?: CodexThreadMeta;
 }
 
 interface PendingAntigravity {
@@ -164,9 +176,41 @@ interface PendingAntigravity {
 
 type PendingItem = PendingClaude | PendingCodex | PendingAntigravity;
 
+interface DirSizeCacheEntry {
+  signature: string;
+  bytes: number;
+  newestMs: number;
+  subagentCount: number;
+}
+
 export class Scanner {
   private parsed = new Map<string, { size: number; mtimeMs: number; metaHash: string; value: ParsedTranscript; subagentCount: number }>();
   private legacy = new Map<string, { size: number; mtimeMs: number; sessionId: string }>();
+  private dirSizes = new Map<string, DirSizeCacheEntry>();
+
+  private async measureSessionDir(
+    dirPath: string,
+    anchorSignature: string,
+    countSubagents: boolean,
+    warn: (code: ScanWarning["code"], path: string) => void,
+  ): Promise<{ bytes: number; newestMs: number; subagentCount: number }> {
+    const rootMtime = await dirMtimeMs(dirPath);
+    const subMtime = countSubagents ? await dirMtimeMs(join(dirPath, "subagents")) : await dirMtimeMs(join(dirPath, ".system_generated", "logs"));
+    const signature = `${rootMtime}|${subMtime}|${anchorSignature}`;
+    const cached = this.dirSizes.get(dirPath);
+    if (cached && cached.signature === signature) {
+      return { bytes: cached.bytes, newestMs: cached.newestMs, subagentCount: cached.subagentCount };
+    }
+    try {
+      const size = await treeSize(dirPath);
+      const subagentCount = countSubagents ? await countJsonl(join(dirPath, "subagents")) : 0;
+      this.dirSizes.set(dirPath, { signature, bytes: size.bytes, newestMs: size.newestMs, subagentCount });
+      return { bytes: size.bytes, newestMs: size.newestMs, subagentCount };
+    } catch {
+      warn("unreadable_dir", dirPath);
+      return { bytes: 0, newestMs: 0, subagentCount: 0 };
+    }
+  }
 
   async scan(roots: AgentRoot[], onProgress?: Progress): Promise<ScanResult> {
     const warnings: ScanWarning[] = [];
@@ -193,13 +237,14 @@ export class Scanner {
 
     const pending: PendingItem[] = [];
     const seenPaths = new Set<string>();
+    const seenDirs = new Set<string>();
 
-    const walkCodexRollouts = async (root: AgentRoot, dir: string, names: Map<string, string>, depth = 0): Promise<void> => {
+    const walkCodexRollouts = async (root: AgentRoot, dir: string, metaMap: Map<string, CodexThreadMeta>, depth = 0): Promise<void> => {
       if (depth > 8) return;
       for (const entry of await list(dir)) {
         const full = join(dir, entry.name);
         if (entry.isDirectory()) {
-          if (SAFE_SEGMENT.test(entry.name)) await walkCodexRollouts(root, full, names, depth + 1);
+          if (SAFE_SEGMENT.test(entry.name)) await walkCodexRollouts(root, full, metaMap, depth + 1);
           continue;
         }
         if (!entry.isFile() || !CODEX_ROLLOUT_FILE.test(entry.name)) continue;
@@ -209,13 +254,15 @@ export class Scanner {
         if (!SAFE_SEGMENT.test(sessionId)) continue;
         seenPaths.add(file.path);
         const relDir = toRelative(root.real, dirname(full));
+        const lockMtimeMs = await codexLockMtime(root.real, sessionId);
         pending.push({
           kind: "codex",
           root,
           relDir,
           sessionId,
           transcript: file,
-          indexTitle: names.get(sessionId) ?? "",
+          lockMtimeMs,
+          meta: metaMap.get(sessionId),
         });
       }
     };
@@ -279,9 +326,9 @@ export class Scanner {
       }
 
       if (root.provider === "codex") {
-        const names = await readCodexSessionNames(root.real);
-        await walkCodexRollouts(root, join(root.real, "sessions"), names);
-        await walkCodexRollouts(root, join(root.real, "archived_sessions"), names);
+        const metaMap = await readCodexMetadata(root.real);
+        await walkCodexRollouts(root, join(root.real, "sessions"), metaMap);
+        await walkCodexRollouts(root, join(root.real, "archived_sessions"), metaMap);
         continue;
       }
 
@@ -349,16 +396,13 @@ export class Scanner {
         if (value) parsedMap.set(item, { parsed: value, extraSubagents: 0 });
       } else if (item.kind === "codex") {
         const { path, size, mtimeMs } = item.transcript;
-        const metaHash = item.indexTitle;
+        const m = item.meta;
+        const metaHash = m ? `${m.title}|${m.cwd}|${m.gitBranch}|${m.model}|${m.cliVersion}` : "";
         const cached = this.parsed.get(path);
         let value = cached && cached.size === size && cached.mtimeMs === mtimeMs && cached.metaHash === metaHash ? cached.value : null;
         if (!value) {
           try {
-            value = await parseCodexRollout(path);
-            if (item.indexTitle && !value.customTitle) {
-              value.customTitle = item.indexTitle;
-              value.searchText = value.searchText ? `${value.searchText}\n${item.indexTitle.toLowerCase()}` : item.indexTitle.toLowerCase();
-            }
+            value = await parseCodexRollout(path, m);
           } catch {
             warn("unreadable_file", path);
             value = null;
@@ -392,10 +436,6 @@ export class Scanner {
       onProgress?.(done, pending.length);
     });
 
-    // Drop cached text of transcripts that no longer exist, including deleted sessions.
-    for (const path of this.parsed.keys()) if (!seenPaths.has(path)) this.parsed.delete(path);
-    for (const path of this.legacy.keys()) if (!seenPaths.has(path)) this.legacy.delete(path);
-
     const sessions = new Map<string, CatalogSession>();
     const bySessionId = new Map<string, string[]>();
     const claudeDirVotes = new Map<string, Map<string, number>>();
@@ -414,14 +454,11 @@ export class Scanner {
         let subagentCount = 0;
         if (item.hasDir) {
           sessionDir = join(item.projectPath, item.sessionId);
-          try {
-            const size = await treeSize(sessionDir);
-            sessionDirBytes = size.bytes;
-            sessionDirNewestMs = size.newestMs;
-            subagentCount = await countJsonl(join(sessionDir, "subagents"));
-          } catch {
-            warn("unreadable_dir", sessionDir);
-          }
+          seenDirs.add(sessionDir);
+          const measured = await this.measureSessionDir(sessionDir, `${item.transcript.size}:${item.transcript.mtimeMs}`, true, warn);
+          sessionDirBytes = measured.bytes;
+          sessionDirNewestMs = measured.newestMs;
+          subagentCount = measured.subagentCount;
         }
         const normalized = normalizeCwd(parsed.cwd);
         const dirGroupKey = `${item.root.id}/${item.projectDir}`;
@@ -458,7 +495,6 @@ export class Scanner {
         const canonicalId = parsed.sessionIds[0] && SAFE_SEGMENT.test(parsed.sessionIds[0]) ? parsed.sessionIds[0] : item.sessionId;
         let key = sessionKey(item.root.id, item.relDir, canonicalId, "codex");
         if (sessions.has(key)) {
-          // Two rollouts in the same directory share a session ID: disambiguate by filename stem.
           key = sessionKey(item.root.id, item.relDir, toRelative(item.root.real, item.transcript.path).replace(/\.jsonl$/, ""), "codex");
         }
         const normalized = normalizeCwd(parsed.cwd);
@@ -477,7 +513,7 @@ export class Scanner {
           sessionDirBytes: 0,
           sessionDirNewestMs: 0,
           extraBytes: 0,
-          extraNewestMs: 0,
+          extraNewestMs: item.lockMtimeMs,
           subagentCount: 0,
           legacyAgents: [],
           parsed,
@@ -490,15 +526,14 @@ export class Scanner {
         let brainBytes = 0;
         let brainNewestMs = 0;
         if (item.brainDir) {
-          try {
-            const size = await treeSize(item.brainDir);
-            brainBytes = size.bytes;
-            brainNewestMs = size.newestMs;
-          } catch {
-            warn("unreadable_dir", item.brainDir);
-          }
+          seenDirs.add(item.brainDir);
+          const anchor = `${item.dbFile?.size ?? 0}:${item.dbFile?.mtimeMs ?? 0}:${item.transcriptFile?.size ?? 0}:${item.transcriptFile?.mtimeMs ?? 0}`;
+          const measured = await this.measureSessionDir(item.brainDir, anchor, false, warn);
+          brainBytes = measured.bytes;
+          brainNewestMs = measured.newestMs;
         }
-        const primary: FileInfo = item.dbFile ?? item.transcriptFile ?? { path: item.brainDir ?? join(item.root.real, "conversations", `${item.sessionId}.db`), size: 0, mtimeMs: brainNewestMs };
+        const primary: FileInfo =
+          item.dbFile ?? item.transcriptFile ?? { path: item.brainDir ?? join(item.root.real, "conversations", `${item.sessionId}.db`), size: 0, mtimeMs: brainNewestMs };
         const extraBytes = (item.annotationFile?.size ?? 0) + (item.presenceFile?.size ?? 0);
         const extraNewestMs = Math.max(item.annotationFile?.mtimeMs ?? 0, item.presenceFile?.mtimeMs ?? 0, item.transcriptFile?.mtimeMs ?? 0);
         const normalized = normalizeCwd(parsed.cwd);
@@ -528,6 +563,11 @@ export class Scanner {
         bySessionId.set(lookup, [...(bySessionId.get(lookup) ?? []), key]);
       }
     }
+
+    // Drop cached entries for files and directories that no longer exist, including deleted sessions.
+    for (const path of this.parsed.keys()) if (!seenPaths.has(path)) this.parsed.delete(path);
+    for (const path of this.legacy.keys()) if (!seenPaths.has(path)) this.legacy.delete(path);
+    for (const dir of this.dirSizes.keys()) if (!seenDirs.has(dir)) this.dirSizes.delete(dir);
 
     // For Claude sessions without an explicit cwd (e.g. empty summary-only transcripts), inherit
     // the majority cwd of their project directory so they stay grouped with their project.

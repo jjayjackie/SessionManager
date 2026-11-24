@@ -1,11 +1,13 @@
 import { lstat, readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ProviderId } from "../shared/schema";
+import { querySqliteReadOnly } from "./sqlite";
 
 /**
  * Which sessions are in use. A session is protected from deletion when any of these hold:
  * - Claude Code: `<root>/sessions/<pid>.json` names it and the process is alive;
- * - Antigravity: `conversations/<id>.db-wal` or `.db-shm` exists (SQLite WAL held open by a live process);
+ * - Antigravity: `conversations/<id>.db-wal` or `.db-shm` exists, OR `conversation_summaries.db`
+ *   marks the conversation running / not_fully_idle;
  * - Codex: its rollout or `thread-writer-locks/<id>.lock` was written within `recentMs`;
  * - Any provider: its session files were written within `recentMs`, or a Paseo agent bound to it
  *   last reported a running or initializing status.
@@ -57,15 +59,22 @@ export async function liveSessionIds(rootPath: string, provider: ProviderId = "c
   }
 
   if (provider === "antigravity") {
-    let names: string[];
     try {
-      names = await readdir(join(rootPath, "conversations"));
+      for (const name of await readdir(join(rootPath, "conversations"))) {
+        const match = /^(.+)\.db-(?:wal|shm)$/.exec(name);
+        if (match) result.add(match[1]);
+      }
     } catch {
-      return result;
+      // No conversations directory.
     }
-    for (const name of names) {
-      const match = /^(.+)\.db-(?:wal|shm)$/.exec(name);
-      if (match) result.add(match[1]);
+    const rows = await querySqliteReadOnly(
+      join(rootPath, "conversation_summaries.db"),
+      "SELECT conversation_id, status, not_fully_idle FROM conversation_summaries WHERE not_fully_idle = 1 OR status LIKE '%RUNNING%' OR status LIKE '%WAITING%'",
+    );
+    if (rows) {
+      for (const row of rows) {
+        if (typeof row.conversation_id === "string" && row.conversation_id) result.add(row.conversation_id);
+      }
     }
     return result;
   }

@@ -260,6 +260,24 @@ describe("session manager", () => {
     );
   });
 
+  it("reflects Codex recent lock activity consistently across list(), detail(), and previewDelete()", async () => {
+    const codex = await writeFullCodexSession(host, { title: "Locked codex run" });
+    await age(codex.rolloutPath);
+    await age(join(host.codex, "tui-thread-reference-capabilities", codex.sessionId));
+    await age(join(host.codex, "shell_snapshots", `${codex.sessionId}.12345.sh`));
+    // Fresh writer lock keeps the session marked recent even when the rollout file itself is older.
+    await writeFileDeep(join(host.codex, "thread-writer-locks", `${codex.sessionId}.lock`), "");
+
+    const m = manager(host, { recentMs: 60_000 });
+    const targetKey = codexKey(codex.sessionId, codex.relDir);
+    const listed = await m.list(query({ provider: "codex" }));
+    assert.equal(listed.items[0].state, "recent");
+    const detail = await m.detail(targetKey);
+    assert.equal(detail.blocked, "recent");
+    const preview = await m.previewDelete([targetKey]);
+    assert.equal(preview.items[0].blocked, "recent");
+  });
+
   it("restores a deleted Claude session byte for byte, including its index entry", async () => {
     const id = await writeFullSession(host, PROJECT);
     await writeFileDeep(join(host.claude, "projects", PROJECT, "sessions-index.json"), JSON.stringify({ version: 1, entries: [{ sessionId: id, firstPrompt: "p" }] }));

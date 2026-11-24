@@ -1,15 +1,16 @@
 import { createReadStream } from "node:fs";
-import { lstat, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { clip } from "../shared/format";
 import { emptyTranscript, MAX_SEARCH_TEXT, type ParsedTranscript, type PreviewMessage } from "./parser";
+import { querySqliteReadOnly } from "./sqlite";
 
 /**
- * Reads Antigravity conversation metadata from `conversation_summaries.db` (via Node's built-in
- * `node:sqlite` in read-only mode when available) merged with `cache/conversation_metadata.json`,
- * and streams per-conversation logs (`brain/<id>/.system_generated/logs/transcript.jsonl`).
+ * Reads Antigravity conversation metadata from `conversation_summaries.db` (read-only via Node's
+ * built-in `node:sqlite` when available) merged with `cache/conversation_metadata.json`, and
+ * streams per-conversation logs (`brain/<id>/.system_generated/logs/transcript.jsonl`).
  */
 
 const MAX_PROMPT = 400;
@@ -53,6 +54,7 @@ export interface AntigravityMeta {
   projectId: string;
   agentName: string;
   internal: boolean;
+  running: boolean;
 }
 
 function parseTimestamp(raw: string): string | null {
@@ -75,57 +77,32 @@ function parseWorkspaceUrisJson(raw: string): string {
   return "";
 }
 
-interface SqliteStatement {
-  all(): Record<string, unknown>[];
+function isRunningStatus(status: string, notFullyIdle: unknown): boolean {
+  if (notFullyIdle === 1 || notFullyIdle === true) return true;
+  return /RUNNING|WAITING|ACTIVE/i.test(status);
 }
-
-interface SqliteDatabase {
-  prepare(sql: string): SqliteStatement;
-  close(): void;
-}
-
-type DatabaseSyncCtor = new (path: string, options?: { readOnly?: boolean }) => SqliteDatabase;
 
 async function readSummariesDb(rootReal: string): Promise<Map<string, AntigravityMeta>> {
   const result = new Map<string, AntigravityMeta>();
-  const dbPath = join(rootReal, "conversation_summaries.db");
-  try {
-    const info = await lstat(dbPath);
-    if (!info.isFile()) return result;
-  } catch {
-    return result;
-  }
-  let db: SqliteDatabase | null = null;
-  try {
-    const specifier = "node:sqlite";
-    const mod = (await import(specifier)) as { DatabaseSync?: DatabaseSyncCtor };
-    if (!mod.DatabaseSync) return result;
-    db = new mod.DatabaseSync(dbPath, { readOnly: true });
-    const rows = db
-      .prepare("SELECT conversation_id, title, preview, step_count, last_modified_time, workspace_uris, project_id, agent_name FROM conversation_summaries")
-      .all();
-    for (const row of rows) {
-      const id = str(row.conversation_id);
-      if (!id) continue;
-      result.set(id, {
-        title: str(row.title),
-        preview: str(row.preview),
-        cwd: parseWorkspaceUrisJson(str(row.workspace_uris)),
-        updatedAt: parseTimestamp(str(row.last_modified_time)),
-        numSteps: typeof row.step_count === "number" ? row.step_count : 0,
-        projectId: str(row.project_id),
-        agentName: str(row.agent_name),
-        internal: false,
-      });
-    }
-  } catch {
-    // node:sqlite unavailable (e.g. Node 20) or database locked; fall back to JSON metadata cache.
-  } finally {
-    try {
-      db?.close();
-    } catch {
-      // ignore close errors
-    }
+  const rows = await querySqliteReadOnly(
+    join(rootReal, "conversation_summaries.db"),
+    "SELECT conversation_id, title, preview, step_count, last_modified_time, workspace_uris, status, not_fully_idle, project_id, agent_name FROM conversation_summaries",
+  );
+  if (!rows) return result;
+  for (const row of rows) {
+    const id = str(row.conversation_id);
+    if (!id) continue;
+    result.set(id, {
+      title: str(row.title),
+      preview: str(row.preview),
+      cwd: parseWorkspaceUrisJson(str(row.workspace_uris)),
+      updatedAt: parseTimestamp(str(row.last_modified_time)),
+      numSteps: typeof row.step_count === "number" ? row.step_count : 0,
+      projectId: str(row.project_id),
+      agentName: str(row.agent_name),
+      internal: false,
+      running: isRunningStatus(str(row.status), row.not_fully_idle),
+    });
   }
   return result;
 }
@@ -144,7 +121,7 @@ export async function readAntigravityMetadata(rootReal: string): Promise<Map<str
     const uris = Array.isArray(summary.WorkspaceURIs) ? summary.WorkspaceURIs.filter((u): u is string => typeof u === "string") : [];
     const cwd = uris.length ? workspaceUriToPath(uris[0]) : "";
     const existing = result.get(id);
-    const jsonMeta: AntigravityMeta = {
+    result.set(id, {
       title: str(summary.Title) || existing?.title || "",
       preview: str(summary.Preview) || existing?.preview || "",
       cwd: cwd || existing?.cwd || "",
@@ -153,8 +130,8 @@ export async function readAntigravityMetadata(rootReal: string): Promise<Map<str
       projectId: str(summary.ProjectID) || existing?.projectId || "",
       agentName: str(summary.AgentName) || existing?.agentName || "",
       internal: Boolean(summary.Internal),
-    };
-    result.set(id, jsonMeta);
+      running: existing?.running ?? false,
+    });
   }
   return result;
 }
@@ -164,7 +141,9 @@ class SearchBuffer {
   private size = 0;
   add(text: string): void {
     if (!text || this.size >= MAX_SEARCH_TEXT) return;
-    const piece = text.slice(0, MAX_SEARCH_TEXT - this.size).toLowerCase();
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized) return;
+    const piece = normalized.slice(0, MAX_SEARCH_TEXT - this.size);
     this.parts.push(piece);
     this.size += piece.length;
   }
@@ -278,6 +257,8 @@ export async function readAntigravityPreview(path: string, head = 4, tail = 4, m
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      // Fast-skip large GENERIC tool-output lines before JSON.parse.
+      if (!line.includes("USER_INPUT") && !line.includes("PLANNER_RESPONSE")) continue;
       let o: Record<string, unknown>;
       try {
         o = object(JSON.parse(line));
