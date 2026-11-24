@@ -7,7 +7,7 @@ import { formatBytes } from "../shared/format";
 import type { SessionSummary } from "../shared/schema";
 import { formatAge } from "./format";
 import { messages } from "./messages";
-import { Badge, Button, Checkbox } from "./ui";
+import { Badge, Button, Checkbox, ProviderTag } from "./ui";
 
 export function useSessionBadges() {
   const { t } = useTranslation(messages);
@@ -21,6 +21,11 @@ export function useSessionBadges() {
     if (session.paseo) badges.push({ key: "paseo", label: session.paseo.archived ? t("badge.archived") : t("badge.paseo"), tone: "accent" });
     return badges;
   };
+}
+
+function baseName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts[parts.length - 1] ?? path;
 }
 
 interface RowProps {
@@ -47,15 +52,15 @@ const SessionRow = memo(function SessionRow({ theme, session, selected, active, 
         alignItems: "flex-start",
         gap: 10,
         paddingHorizontal: compact ? 10 : 14,
-        paddingVertical: 10,
+        paddingVertical: 11,
         borderBottomWidth: 1,
         borderBottomColor: c.border,
         backgroundColor: active ? c.surface2 : selected ? c.surface1 : "transparent",
-        borderLeftWidth: 3,
-        borderLeftColor: active ? c.accent : "transparent",
+        borderLeftWidth: 2.5,
+        borderLeftColor: active ? c.accent : selected ? c.border : "transparent",
       }}
     >
-      <View style={{ paddingTop: 2 }}>
+      <View style={{ paddingTop: 3 }}>
         <Checkbox theme={theme} checked={selected} label={t("list.select", { title })} onToggle={() => onToggle(session.key)} />
       </View>
       <Pressable
@@ -63,43 +68,55 @@ const SessionRow = memo(function SessionRow({ theme, session, selected, active, 
         accessibilityLabel={title}
         accessibilityState={{ selected: active }}
         onPress={() => onOpen(session.key)}
-        style={({ pressed }) => ({ flex: 1, gap: 4, opacity: pressed ? 0.75 : 1 })}
+        style={({ pressed }) => ({ flex: 1, gap: 5, opacity: pressed ? 0.78 : 1 })}
       >
+        {/* Row 1: Provider tag + Title + Relative age */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 14, fontWeight: "600" }}>
+          <ProviderTag theme={theme} provider={session.provider} />
+          <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>
             {title}
           </Text>
-          <Text style={{ color: c.foregroundMuted, fontSize: 12, fontVariant: ["tabular-nums"] }}>{formatAge(session.updatedAt, locale)}</Text>
-        </View>
-        {session.snippet ? (
-          <Text numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 12, fontStyle: "italic" }}>
-            {session.snippet}
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>
+            {formatAge(session.updatedAt, locale)}
           </Text>
+        </View>
+
+        {/* Row 2: Search snippet or first prompt */}
+        {session.snippet ? (
+          <View style={{ borderLeftWidth: 2, borderLeftColor: c.accent, paddingLeft: 8 }}>
+            <Text numberOfLines={2} style={{ color: c.foregroundMuted, fontSize: 12 }}>
+              {session.snippet}
+            </Text>
+          </View>
         ) : session.firstPrompt && session.firstPrompt !== session.title ? (
           <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12 }}>
             {session.firstPrompt}
           </Text>
         ) : null}
-        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 6 }}>
+
+        {/* Row 3: Structured technical metadata + status badges */}
+        <View style={{ flexDirection: "row", flexWrap: "wrap", alignItems: "center", gap: 8 }}>
           {showProject && session.cwd ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 4, maxWidth: "100%" }}>
-              <Icon name="Folder" size={12} color={c.foregroundMuted} />
-              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, flexShrink: 1 }}>
-                {session.cwd}
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 4, maxWidth: compact ? 160 : 220 }}>
+              <Icon name="Folder" size={11} color={c.foregroundMuted} />
+              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", flexShrink: 1 }}>
+                {baseName(session.cwd)}
               </Text>
             </View>
           ) : null}
           {session.gitBranch ? (
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
-              <Icon name="GitBranch" size={12} color={c.foregroundMuted} />
-              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 12, maxWidth: 160 }}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 3, maxWidth: 140 }}>
+              <Icon name="GitBranch" size={11} color={c.foregroundMuted} />
+              <Text numberOfLines={1} style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", flexShrink: 1 }}>
                 {session.gitBranch}
               </Text>
             </View>
           ) : null}
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("list.messages", { count: messagesCount })}</Text>
-          {session.subagentCount ? <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("list.subagents", { count: session.subagentCount })}</Text> : null}
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{formatBytes(session.bytes)}</Text>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontVariant: ["tabular-nums"] }}>{t("list.messages", { count: messagesCount })}</Text>
+          {session.subagentCount ? (
+            <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontVariant: ["tabular-nums"] }}>{t("list.subagents", { count: session.subagentCount })}</Text>
+          ) : null}
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>{formatBytes(session.bytes)}</Text>
           {badges.map((badge) => (
             <Badge key={badge.key} theme={theme} label={badge.label} tone={badge.tone} icon={badge.icon} />
           ))}
@@ -143,7 +160,7 @@ export function SessionList(props: ListProps) {
           alignItems: "center",
           gap: 10,
           paddingHorizontal: compact ? 10 : 14,
-          paddingVertical: 8,
+          paddingVertical: 7,
           borderBottomWidth: 1,
           borderBottomColor: c.border,
           backgroundColor: c.surface1,
@@ -151,8 +168,8 @@ export function SessionList(props: ListProps) {
         }}
       >
         <Checkbox theme={theme} checked={allOnPage} mixed={onPage > 0 && !allOnPage} label={t("list.selectPage")} onToggle={props.onTogglePage} disabled={!items.length} />
-        <Text style={{ color: c.foregroundMuted, fontSize: 12, flex: 1 }}>
-          {selected.size ? t("list.selected", { count: selected.size }) : t("list.selectPage")}
+        <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontWeight: "600", flex: 1, fontVariant: ["tabular-nums"] }}>
+          {selected.size ? t("list.selected", { count: selected.size }) : t("list.showing", { shown: items.length, total })}
         </Text>
         {selected.size ? (
           <>
@@ -176,15 +193,17 @@ export function SessionList(props: ListProps) {
           />
         ))
       ) : (
-        <View style={{ alignItems: "center", justifyContent: "center", padding: 40, gap: 10 }}>
-          <Icon name="Inbox" size={28} color={c.foregroundMuted} />
+        <View style={{ alignItems: "center", justifyContent: "center", padding: 44, gap: 10 }}>
+          <Icon name="Inbox" size={26} color={c.foregroundMuted} />
           <Text style={{ color: c.foregroundMuted, fontSize: 13, textAlign: "center" }}>{props.emptyHost ? t("list.emptyHost") : t("list.empty")}</Text>
         </View>
       )}
       {pages > 1 ? (
-        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, padding: 12 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 12, padding: 12, borderTopWidth: 1, borderTopColor: c.border }}>
           <Button theme={theme} compact iconOnly icon="ChevronLeft" label={t("list.previous")} disabled={page <= 0} onPress={() => props.onPage(page - 1)} />
-          <Text style={{ color: c.foregroundMuted, fontSize: 12 }}>{t("list.page", { page: page + 1, pages })}</Text>
+          <Text style={{ color: c.foregroundMuted, fontSize: 11.5, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>
+            {t("list.page", { page: page + 1, pages })}
+          </Text>
           <Button theme={theme} compact iconOnly icon="ChevronRight" label={t("list.next")} disabled={page >= pages - 1} onPress={() => props.onPage(page + 1)} />
         </View>
       ) : null}
