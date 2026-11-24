@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { lstat, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -7,9 +7,9 @@ import { clip } from "../shared/format";
 import { emptyTranscript, MAX_SEARCH_TEXT, type ParsedTranscript, type PreviewMessage } from "./parser";
 
 /**
- * Reads Antigravity conversation metadata (`cache/conversation_metadata.json`) and streams
- * per-conversation logs (`brain/<id>/.system_generated/logs/transcript.jsonl`). Pure Node.js
- * without native SQLite dependencies so it runs safely on any Paseo daemon host.
+ * Reads Antigravity conversation metadata from `conversation_summaries.db` (via Node's built-in
+ * `node:sqlite` in read-only mode when available) merged with `cache/conversation_metadata.json`,
+ * and streams per-conversation logs (`brain/<id>/.system_generated/logs/transcript.jsonl`).
  */
 
 const MAX_PROMPT = 400;
@@ -38,7 +38,6 @@ export function workspaceUriToPath(uri: string): string {
 export function extractAntigravityUserText(raw: string): string {
   const match = /<USER_REQUEST>\s*([\s\S]*?)\s*<\/USER_REQUEST>/i.exec(raw);
   if (match) return match[1].trim();
-  // Strip trailing metadata tags if the request wasn't wrapped in USER_REQUEST.
   return raw
     .replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/gi, "")
     .replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/gi, "")
@@ -53,10 +52,86 @@ export interface AntigravityMeta {
   numSteps: number;
   projectId: string;
   agentName: string;
+  internal: boolean;
+}
+
+function parseTimestamp(raw: string): string | null {
+  if (!raw || raw.startsWith("0001-01-01")) return null;
+  const iso = raw.includes("T") ? raw : raw.replace(" ", "T");
+  return Number.isNaN(Date.parse(iso)) ? null : new Date(Date.parse(iso)).toISOString();
+}
+
+function parseWorkspaceUrisJson(raw: string): string {
+  if (!raw) return "";
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      const first = parsed.find((item): item is string => typeof item === "string" && item.length > 0);
+      if (first) return workspaceUriToPath(first);
+    }
+  } catch {
+    // Ignore malformed workspace URI JSON.
+  }
+  return "";
+}
+
+interface SqliteStatement {
+  all(): Record<string, unknown>[];
+}
+
+interface SqliteDatabase {
+  prepare(sql: string): SqliteStatement;
+  close(): void;
+}
+
+type DatabaseSyncCtor = new (path: string, options?: { readOnly?: boolean }) => SqliteDatabase;
+
+async function readSummariesDb(rootReal: string): Promise<Map<string, AntigravityMeta>> {
+  const result = new Map<string, AntigravityMeta>();
+  const dbPath = join(rootReal, "conversation_summaries.db");
+  try {
+    const info = await lstat(dbPath);
+    if (!info.isFile()) return result;
+  } catch {
+    return result;
+  }
+  let db: SqliteDatabase | null = null;
+  try {
+    const specifier = "node:sqlite";
+    const mod = (await import(specifier)) as { DatabaseSync?: DatabaseSyncCtor };
+    if (!mod.DatabaseSync) return result;
+    db = new mod.DatabaseSync(dbPath, { readOnly: true });
+    const rows = db
+      .prepare("SELECT conversation_id, title, preview, step_count, last_modified_time, workspace_uris, project_id, agent_name FROM conversation_summaries")
+      .all();
+    for (const row of rows) {
+      const id = str(row.conversation_id);
+      if (!id) continue;
+      result.set(id, {
+        title: str(row.title),
+        preview: str(row.preview),
+        cwd: parseWorkspaceUrisJson(str(row.workspace_uris)),
+        updatedAt: parseTimestamp(str(row.last_modified_time)),
+        numSteps: typeof row.step_count === "number" ? row.step_count : 0,
+        projectId: str(row.project_id),
+        agentName: str(row.agent_name),
+        internal: false,
+      });
+    }
+  } catch {
+    // node:sqlite unavailable (e.g. Node 20) or database locked; fall back to JSON metadata cache.
+  } finally {
+    try {
+      db?.close();
+    } catch {
+      // ignore close errors
+    }
+  }
+  return result;
 }
 
 export async function readAntigravityMetadata(rootReal: string): Promise<Map<string, AntigravityMeta>> {
-  const result = new Map<string, AntigravityMeta>();
+  const result = await readSummariesDb(rootReal);
   let raw: unknown;
   try {
     raw = JSON.parse(await readFile(join(rootReal, "cache", "conversation_metadata.json"), "utf8"));
@@ -68,17 +143,18 @@ export async function readAntigravityMetadata(rootReal: string): Promise<Map<str
     const summary = object(object(entry).summary);
     const uris = Array.isArray(summary.WorkspaceURIs) ? summary.WorkspaceURIs.filter((u): u is string => typeof u === "string") : [];
     const cwd = uris.length ? workspaceUriToPath(uris[0]) : "";
-    const rawUpdated = str(summary.UpdatedAt);
-    const updatedAt = rawUpdated && !rawUpdated.startsWith("0001-01-01") && !Number.isNaN(Date.parse(rawUpdated)) ? rawUpdated : null;
-    result.set(id, {
-      title: str(summary.Title),
-      preview: str(summary.Preview),
-      cwd,
-      updatedAt,
-      numSteps: typeof summary.NumSteps === "number" ? summary.NumSteps : 0,
-      projectId: str(summary.ProjectID),
-      agentName: str(summary.AgentName),
-    });
+    const existing = result.get(id);
+    const jsonMeta: AntigravityMeta = {
+      title: str(summary.Title) || existing?.title || "",
+      preview: str(summary.Preview) || existing?.preview || "",
+      cwd: cwd || existing?.cwd || "",
+      updatedAt: parseTimestamp(str(summary.UpdatedAt)) ?? existing?.updatedAt ?? null,
+      numSteps: Math.max(typeof summary.NumSteps === "number" ? summary.NumSteps : 0, existing?.numSteps ?? 0),
+      projectId: str(summary.ProjectID) || existing?.projectId || "",
+      agentName: str(summary.AgentName) || existing?.agentName || "",
+      internal: Boolean(summary.Internal),
+    };
+    result.set(id, jsonMeta);
   }
   return result;
 }

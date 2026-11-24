@@ -238,6 +238,28 @@ describe("session manager", () => {
     assert.equal((await m.list(query({ provider: "antigravity" }))).total, 1);
   });
 
+  it("ignores Antigravity pre-allocated 0-step empty placeholder shells and internal trajectories", async () => {
+    const realId = await writeFullAntigravitySession(host, { title: "Real conversation" });
+    const ghostId = randomUUID();
+    await writeFileDeep(join(host.antigravity, "conversations", `${ghostId}.db`), "empty-384kb-shell");
+    await mkdir(join(host.antigravity, "brain", ghostId, "scratch"), { recursive: true });
+    const internalId = randomUUID();
+    await writeFileDeep(join(host.antigravity, "conversations", `${internalId}.db`), "internal-shell");
+    const metaPath = join(host.antigravity, "cache", "conversation_metadata.json");
+    const existing = JSON.parse(await readFile(metaPath, "utf8")) as { conversations: Record<string, unknown> };
+    existing.conversations[internalId] = {
+      summary: { ID: internalId, Title: "Internal probe", NumSteps: 1, Internal: true, WorkspaceURIs: ["file:///work/app"] },
+    };
+    await writeFile(metaPath, JSON.stringify(existing, null, 2));
+
+    const listed = await manager(host).list(query({ provider: "antigravity" }));
+    assert.deepEqual(
+      listed.items.map((item) => item.sessionId),
+      [realId],
+      "only real user-started Antigravity conversations are listed",
+    );
+  });
+
   it("restores a deleted Claude session byte for byte, including its index entry", async () => {
     const id = await writeFullSession(host, PROJECT);
     await writeFileDeep(join(host.claude, "projects", PROJECT, "sessions-index.json"), JSON.stringify({ version: 1, entries: [{ sessionId: id, firstPrompt: "p" }] }));
