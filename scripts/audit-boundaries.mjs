@@ -49,7 +49,7 @@ for (const path of files) {
   }
   // Validate inline SVG icons against Paseo's findSvgIconProblem contract.
   if (area === "client" && isSvg) {
-    if (Buffer.byteLength(source, "utf8") > 64 * 1024) findings.push(`${name}: SVG exceeds 64 KiB`);
+    if ((await stat(path)).size > 64 * 1024) findings.push(`${name}: SVG exceeds 64 KiB`);
     if (!/^\s*<svg(?:\s|>)/i.test(source)) findings.push(`${name}: not an SVG document`);
     if (/<(script|style|foreignObject)(?:\s|>)/i.test(source)) findings.push(`${name}: forbidden SVG element`);
     if (/\son[a-z0-9_-]*\s*=/i.test(source) || /javascript\s*:/i.test(source)) findings.push(`${name}: unsafe SVG attribute or URL`);
