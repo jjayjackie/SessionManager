@@ -23,6 +23,7 @@ export function useSessionList(hostId: string, input: ListInput) {
     queryKey: hostKey(hostId, "list", input),
     queryFn: () => list(input),
     placeholderData: keepPreviousData,
+    staleTime: 10_000,
     // Poll quickly while the first scan runs, then refresh periodically and after reconnects.
     refetchInterval: (query) => (query.state.data?.scanning ? 1500 : 30_000),
     retry: 2,
@@ -47,6 +48,7 @@ export function useSessionDetail(hostId: string, key: string | null) {
     queryKey: hostKey(hostId, "detail", key),
     queryFn: () => detail({ key: key ?? "" }),
     enabled: Boolean(key),
+    staleTime: 10_000,
     retry: 1,
   });
 }
@@ -78,6 +80,7 @@ export function useTrash(hostId: string, enabled: boolean) {
     queryKey: hostKey(hostId, "trash"),
     queryFn: () => list({}),
     enabled,
+    staleTime: 10_000,
     placeholderData: keepPreviousData,
     refetchInterval: 30_000,
     retry: 2,

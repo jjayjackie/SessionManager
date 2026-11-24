@@ -1,26 +1,30 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useTranslation } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
-import { memo } from "react";
+import { memo, useMemo } from "react";
 import { Pressable, Text, View } from "react-native";
 import { formatBytes } from "../shared/format";
 import type { SessionSummary } from "../shared/schema";
 import { formatAge } from "./format";
 import { messages } from "./messages";
-import { Badge, Button, Checkbox, ProviderTag, providerBrandColor } from "./ui";
+import { Badge, Button, Checkbox, ProviderTag, providerBrandColor, type Tone } from "./ui";
 
-export function useSessionBadges() {
-  const { t } = useTranslation(messages);
-  return (session: SessionSummary) => {
-    const badges: { key: string; label: string; tone: "accent" | "success" | "warning" | "danger" | "neutral"; icon?: string }[] = [];
-    if (session.state === "running") badges.push({ key: "running", label: t("badge.running"), tone: "success", icon: "Activity" });
-    else if (session.state === "recent") badges.push({ key: "recent", label: t("badge.recent"), tone: "warning", icon: "Activity" });
-    if (session.health === "damaged") badges.push({ key: "damaged", label: t("badge.damaged"), tone: "danger", icon: "TriangleAlert" });
-    if (session.health === "empty") badges.push({ key: "empty", label: t("badge.empty"), tone: "neutral" });
-    if (session.duplicateId) badges.push({ key: "duplicate", label: t("badge.duplicate"), tone: "warning", icon: "Copy" });
-    if (session.paseo) badges.push({ key: "paseo", label: session.paseo.archived ? t("badge.archived") : t("badge.paseo"), tone: "accent" });
-    return badges;
-  };
+export interface SessionBadge {
+  key: string;
+  label: string;
+  tone: Tone;
+  icon?: string;
+}
+
+export function buildSessionBadges(session: SessionSummary, t: (key: string) => string): SessionBadge[] {
+  const badges: SessionBadge[] = [];
+  if (session.state === "running") badges.push({ key: "running", label: t("badge.running"), tone: "success", icon: "Activity" });
+  else if (session.state === "recent") badges.push({ key: "recent", label: t("badge.recent"), tone: "warning", icon: "Activity" });
+  if (session.health === "damaged") badges.push({ key: "damaged", label: t("badge.damaged"), tone: "danger", icon: "TriangleAlert" });
+  if (session.health === "empty") badges.push({ key: "empty", label: t("badge.empty"), tone: "neutral" });
+  if (session.duplicateId) badges.push({ key: "duplicate", label: t("badge.duplicate"), tone: "warning", icon: "Copy" });
+  if (session.paseo) badges.push({ key: "paseo", label: session.paseo.archived ? t("badge.archived") : t("badge.paseo"), tone: "accent" });
+  return badges;
 }
 
 function baseName(path: string): string {
@@ -41,7 +45,7 @@ interface RowProps {
 
 const SessionRow = memo(function SessionRow({ theme, session, selected, active, compact, showProject, onToggle, onOpen }: RowProps) {
   const { t, locale } = useTranslation(messages);
-  const badges = useSessionBadges()(session);
+  const badges = useMemo(() => buildSessionBadges(session, (key) => t(key as never)), [session, t]);
   const c = theme.colors;
   const title = session.title || t("list.untitled");
   const messagesCount = session.userMessages + session.assistantMessages;
@@ -70,7 +74,7 @@ const SessionRow = memo(function SessionRow({ theme, session, selected, active, 
         onPress={() => onOpen(session.key)}
         style={({ pressed }) => ({ flex: 1, gap: 5, opacity: pressed ? 0.78 : 1 })}
       >
-        {/* Row 1: Provider tag + Title + Relative age */}
+        {/* Row 1: Provider brand emblem + Title + Relative age */}
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
           <ProviderTag theme={theme} provider={session.provider} />
           <Text numberOfLines={1} style={{ flex: 1, color: c.foreground, fontSize: 13.5, fontWeight: "600" }}>
@@ -145,7 +149,7 @@ interface ListProps {
   onPage(page: number): void;
 }
 
-export function SessionList(props: ListProps) {
+export const SessionList = memo(function SessionList(props: ListProps) {
   const { theme, compact, items, total, page, pageSize, selected, activeKey, showProject } = props;
   const { t } = useTranslation(messages);
   const c = theme.colors;
@@ -209,4 +213,4 @@ export function SessionList(props: ListProps) {
       ) : null}
     </View>
   );
-}
+});
