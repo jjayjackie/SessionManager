@@ -24,7 +24,7 @@ import { errorText, formatTime } from "./format";
 import { messages } from "./messages";
 import { SessionList } from "./session-list";
 import { TrashView } from "./trash-view";
-import { Banner, Button, ProviderDot, Select, providerTone, toneColor, type SelectOption } from "./ui";
+import { Banner, Button, ProviderLogo, Select, providerBrandColor, type SelectOption } from "./ui";
 
 interface Filters {
   provider: ProviderFilter;
@@ -488,14 +488,7 @@ function ProviderBar({
   labels: Record<ProviderFilter, string>;
 }) {
   const c = theme.colors;
-  const items: { id: ProviderFilter; count: number; accent?: string }[] = [
-    { id: "all", count: total },
-    ...PROVIDERS.map((provider) => ({
-      id: provider as ProviderFilter,
-      count: counts?.[provider] ?? 0,
-      accent: toneColor(theme, providerTone(provider)),
-    })),
-  ];
+  const allActive = value === "all";
   return (
     <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ alignItems: "center" }}>
       <View
@@ -510,30 +503,59 @@ function ProviderBar({
           gap: 2,
         }}
       >
-        {items.map((item) => {
-          const active = value === item.id;
+        <Pressable
+          key="all"
+          accessibilityRole="tab"
+          accessibilityLabel={`${labels.all}, ${total}`}
+          accessibilityState={{ selected: allActive }}
+          onPress={() => onChange("all")}
+          style={({ pressed }) => ({
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 5,
+            paddingHorizontal: 9,
+            paddingVertical: 5,
+            borderRadius: 4,
+            backgroundColor: allActive ? c.surface2 : pressed ? c.surface0 : "transparent",
+            borderWidth: 1,
+            borderColor: allActive ? c.border : "transparent",
+            borderBottomWidth: allActive ? 2 : 1,
+            borderBottomColor: allActive ? c.accent : "transparent",
+          })}
+        >
+          <Icon name="Layers" size={13} color={allActive ? c.foreground : c.foregroundMuted} />
+          <Text style={{ color: allActive ? c.foreground : c.foregroundMuted, fontSize: 12, fontWeight: allActive ? "700" : "500" }}>{labels.all}</Text>
+          <Text style={{ color: allActive ? c.foreground : c.foregroundMuted, fontSize: 11, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>{total}</Text>
+        </Pressable>
+        {PROVIDERS.map((provider) => {
+          const active = value === provider;
+          const count = counts?.[provider] ?? 0;
+          const brandColor = providerBrandColor(provider);
           return (
             <Pressable
-              key={item.id}
+              key={provider}
               accessibilityRole="tab"
+              accessibilityLabel={`${labels[provider]}, ${count}`}
               accessibilityState={{ selected: active }}
-              onPress={() => onChange(item.id)}
+              onPress={() => onChange(provider)}
               style={({ pressed }) => ({
                 flexDirection: "row",
                 alignItems: "center",
-                gap: 6,
+                gap: 5,
                 paddingHorizontal: 9,
                 paddingVertical: 5,
                 borderRadius: 4,
                 backgroundColor: active ? c.surface2 : pressed ? c.surface0 : "transparent",
                 borderWidth: 1,
                 borderColor: active ? c.border : "transparent",
+                borderBottomWidth: active ? 2 : 1,
+                borderBottomColor: active ? brandColor : "transparent",
+                opacity: !active && count === 0 ? 0.55 : 1,
               })}
             >
-              {item.accent ? <View style={{ width: 6, height: 6, borderRadius: 2, backgroundColor: item.accent }} /> : null}
-              <Text style={{ color: active ? c.foreground : c.foregroundMuted, fontSize: 12, fontWeight: active ? "700" : "500" }}>{labels[item.id]}</Text>
-              <Text style={{ color: active ? c.foreground : c.foregroundMuted, fontSize: 11, fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>
-                {item.count}
+              <ProviderLogo provider={provider} size={14} />
+              <Text style={{ color: active ? c.foreground : c.foregroundMuted, fontSize: 11.5, fontWeight: active ? "700" : "500", fontFamily: "monospace", fontVariant: ["tabular-nums"] }}>
+                {count}
               </Text>
             </Pressable>
           );
@@ -644,9 +666,9 @@ function ProjectNav({ theme, width, projects, total, active, onSelect }: { theme
               <View style={{ flex: 1 }} />
             )}
             {providers && providers.length > 0 ? (
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
                 {providers.map((provider) => (
-                  <ProviderDot key={provider} theme={theme} provider={provider} />
+                  <ProviderLogo key={provider} provider={provider} size={11} />
                 ))}
               </View>
             ) : null}
