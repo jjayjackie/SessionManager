@@ -1,7 +1,7 @@
 {
   "name": "session-manager",
   "private": true,
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Paseo plugin that browses, searches, deletes, and restores native Claude Code, Codex, and Antigravity session history on each host.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.server.json",
