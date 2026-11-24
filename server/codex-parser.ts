@@ -1,14 +1,15 @@
 import { createReadStream } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { clip } from "../shared/format";
 import { emptyTranscript, MAX_SEARCH_TEXT, type ParsedTranscript, type PreviewMessage } from "./parser";
+import { querySqliteReadOnly } from "./sqlite";
 
 /**
  * Streams a Codex CLI rollout JSONL (`sessions/YYYY/MM/DD/rollout-<ts>-<id>.jsonl` or
- * `archived_sessions/rollout-*.jsonl`). Extracts session metadata, cwd, git branch, model,
- * prompts, replies, and search text without requiring native SQLite bindings.
+ * `archived_sessions/rollout-*.jsonl`) and enriches metadata from `session_index.jsonl` and
+ * read-only `state_*.sqlite` when present.
  */
 
 const MAX_PROMPT = 400;
@@ -55,13 +56,24 @@ class SearchBuffer {
   private size = 0;
   add(text: string): void {
     if (!text || this.size >= MAX_SEARCH_TEXT) return;
-    const piece = text.slice(0, MAX_SEARCH_TEXT - this.size).toLowerCase();
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized) return;
+    const piece = normalized.slice(0, MAX_SEARCH_TEXT - this.size);
     this.parts.push(piece);
     this.size += piece.length;
   }
   toString(): string {
     return this.parts.join("\n");
   }
+}
+
+export interface CodexThreadMeta {
+  title: string;
+  cwd: string;
+  gitBranch: string;
+  cliVersion: string;
+  model: string;
+  firstUserMessage: string;
 }
 
 export class CodexRolloutAccumulator {
@@ -162,20 +174,28 @@ export class CodexRolloutAccumulator {
     }
   }
 
-  finish(): ParsedTranscript {
+  finish(meta?: CodexThreadMeta): ParsedTranscript {
     const r = this.result;
     r.sessionIds = [...this.sessionIds];
-    r.models = [...this.models].sort();
     r.userMessages = this.responseUserMessages || this.eventUserMessages;
     r.assistantMessages = this.responseAssistantMessages || this.eventAssistantMessages;
     if (!r.firstPrompt && this.eventFirstPrompt) r.firstPrompt = this.eventFirstPrompt;
+    if (meta) {
+      if (meta.title && !r.customTitle) r.customTitle = meta.title;
+      if (meta.cwd && !r.cwd) r.cwd = meta.cwd;
+      if (meta.gitBranch && !r.gitBranch) r.gitBranch = meta.gitBranch;
+      if (meta.cliVersion && !r.version) r.version = meta.cliVersion;
+      if (meta.model) this.models.add(meta.model);
+      if (meta.firstUserMessage && !r.firstPrompt) r.firstPrompt = clip(meta.firstUserMessage, MAX_PROMPT);
+    }
+    r.models = [...this.models].sort();
     this.search.add([r.customTitle, r.firstPrompt, r.lastPrompt].filter(Boolean).join("\n"));
     r.searchText = this.search.toString();
     return r;
   }
 }
 
-export async function parseCodexRollout(path: string): Promise<ParsedTranscript> {
+export async function parseCodexRollout(path: string, meta?: CodexThreadMeta): Promise<ParsedTranscript> {
   const accumulator = new CodexRolloutAccumulator();
   const stream = createReadStream(path, { encoding: "utf8" });
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
@@ -185,7 +205,7 @@ export async function parseCodexRollout(path: string): Promise<ParsedTranscript>
     lines.close();
     stream.destroy();
   }
-  return accumulator.finish();
+  return accumulator.finish(meta);
 }
 
 export async function readCodexPreview(path: string, head = 4, tail = 4, max = 600): Promise<PreviewMessage[]> {
@@ -205,6 +225,9 @@ export async function readCodexPreview(path: string, head = 4, tail = 4, max = 6
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      // Fast-skip large non-conversational lines (tool calls, diffs, shell output) before JSON.parse.
+      if (!line.includes("response_item") && !line.includes("event_msg")) continue;
+      if (!line.includes("message") && !line.includes("user_message") && !line.includes("agent_message")) continue;
       let o: Record<string, unknown>;
       try {
         o = object(JSON.parse(line));
@@ -238,14 +261,60 @@ export async function readCodexPreview(path: string, head = 4, tail = 4, max = 6
   return responseFirst.length ? [...responseFirst, ...responseLast] : [...eventFirst, ...eventLast];
 }
 
-/** Reads optional `<root>/session_index.jsonl` for user-assigned Codex thread names. */
-export async function readCodexSessionNames(rootReal: string): Promise<Map<string, string>> {
-  const names = new Map<string, string>();
+async function latestCodexStateDb(rootReal: string): Promise<string | null> {
+  let names: string[];
+  try {
+    names = await readdir(rootReal);
+  } catch {
+    return null;
+  }
+  let bestVersion = -1;
+  let bestName: string | null = null;
+  for (const name of names) {
+    const match = /^state_(\d+)\.sqlite$/.exec(name);
+    if (!match) continue;
+    const version = Number(match[1]);
+    if (version > bestVersion) {
+      bestVersion = version;
+      bestName = name;
+    }
+  }
+  return bestName ? join(rootReal, bestName) : null;
+}
+
+/**
+ * Reads optional Codex thread metadata from `state_<n>.sqlite` (read-only) merged with
+ * `<root>/session_index.jsonl`, giving accurate titles, branches, models, and cwds even when
+ * `session_index.jsonl` is empty.
+ */
+export async function readCodexMetadata(rootReal: string): Promise<Map<string, CodexThreadMeta>> {
+  const result = new Map<string, CodexThreadMeta>();
+  const stateDb = await latestCodexStateDb(rootReal);
+  if (stateDb) {
+    const rows =
+      (await querySqliteReadOnly(stateDb, "SELECT id, title, name, cwd, git_branch, cli_version, model, first_user_message FROM threads")) ??
+      (await querySqliteReadOnly(stateDb, "SELECT id, title, cwd, git_branch, cli_version, first_user_message FROM threads"));
+    if (rows) {
+      for (const row of rows) {
+        const id = str(row.id);
+        if (!id) continue;
+        result.set(id, {
+          title: str(row.name) || str(row.title),
+          cwd: str(row.cwd),
+          gitBranch: str(row.git_branch),
+          cliVersion: str(row.cli_version),
+          model: str(row.model),
+          firstUserMessage: str(row.first_user_message),
+        });
+      }
+    }
+  }
+
   let raw: string;
   try {
     raw = await readFile(join(rootReal, "session_index.jsonl"), "utf8");
   } catch {
-    return names;
+    return result;
   }
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue;
@@ -253,10 +322,19 @@ export async function readCodexSessionNames(rootReal: string): Promise<Map<strin
       const o = object(JSON.parse(line));
       const id = str(o.id);
       const name = str(o.thread_name) || str(o.title);
-      if (id && name) names.set(id, name);
+      if (!id || !name) continue;
+      const existing = result.get(id);
+      result.set(id, {
+        title: name,
+        cwd: existing?.cwd ?? "",
+        gitBranch: existing?.gitBranch ?? "",
+        cliVersion: existing?.cliVersion ?? "",
+        model: existing?.model ?? "",
+        firstUserMessage: existing?.firstUserMessage ?? "",
+      });
     } catch {
       // Ignore malformed lines in the index.
     }
   }
-  return names;
+  return result;
 }

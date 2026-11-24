@@ -12,6 +12,7 @@ import {
   type ProviderCounts,
   type ProviderId,
   type ReasonCode,
+  type RootInfo,
   type SessionState,
   type SessionSummary,
   type TrashListOutput,
@@ -30,6 +31,7 @@ import { UnsafePathError } from "./safety";
 
 export const RECENT_MS = 90_000;
 const STALE_MS = 15_000;
+const TRASH_CACHE_MS = 15_000;
 const FIRST_WAIT_MS = 4_000;
 
 export interface ManagerOptions {
@@ -42,10 +44,24 @@ export interface ManagerOptions {
   recentMs?: number;
 }
 
+interface IndexedSession {
+  session: CatalogSession;
+  summary: SessionSummary;
+  newestMs: number;
+  /** Lowercased metadata-only haystack (kept separate from `parsed.searchText` to avoid huge concatenations). */
+  metaHaystack: string;
+}
+
 interface Catalog extends ScanResult {
   scannedAt: number;
   live: Map<string, Set<string>>;
   agents: Map<string, PaseoAgent>;
+  indexed: IndexedSession[];
+  byProvider: ProviderCounts;
+  rootInfos: RootInfo[];
+  totalProjects: number;
+  totalBytes: number;
+  damagedCount: number;
 }
 
 export function defaultTrashDir(home: string): string {
@@ -89,9 +105,18 @@ function emptyProviderCounts(): ProviderCounts {
   return { claude: 0, codex: 0, antigravity: 0 };
 }
 
+function newestMtimeOf(session: CatalogSession): number {
+  return Math.max(
+    session.transcript.mtimeMs,
+    session.sessionDirNewestMs,
+    session.extraNewestMs,
+    ...session.legacyAgents.map((file) => file.mtimeMs),
+  );
+}
+
 /**
  * One instance per plugin installation, i.e. per daemon host. Reads run against the latest
- * catalog; mutations run one at a time and re-verify each session on disk before touching it.
+ * pre-indexed catalog; mutations run one at a time and re-verify each session on disk before touching it.
  */
 export class SessionManager {
   private readonly scanner = new Scanner();
@@ -103,6 +128,7 @@ export class SessionManager {
   private readonly rootsSource: () => Promise<AgentRoot[]>;
   private catalog: Catalog | null = null;
   private scanPromise: Promise<void> | null = null;
+  private trashCache: { count: number; bytes: number; at: number } | null = null;
   private epoch = 0;
   private progress = { done: 0, total: 0 };
   private lock: Promise<unknown> = Promise.resolve();
@@ -126,6 +152,61 @@ export class SessionManager {
     return this.trash.dir;
   }
 
+  private async trashSummary(force = false): Promise<{ count: number; bytes: number }> {
+    const currentNow = this.now();
+    if (!force && this.trashCache && currentNow - this.trashCache.at < TRASH_CACHE_MS) {
+      return { count: this.trashCache.count, bytes: this.trashCache.bytes };
+    }
+    const { entries, bytes } = await this.trash.list();
+    this.trashCache = { count: entries.length, bytes, at: currentNow };
+    return { count: entries.length, bytes };
+  }
+
+  private buildSummary(
+    session: CatalogSession,
+    live: Map<string, Set<string>>,
+    agents: Map<string, PaseoAgent>,
+    bySessionId: Map<string, string[]>,
+    scannedAt: number,
+  ): IndexedSession {
+    const p = session.parsed;
+    const titleSource = p.customTitle ? "custom" : p.aiTitle ? "ai" : p.summary ? "summary" : p.firstPrompt ? "prompt" : "none";
+    const title = clip(p.customTitle || p.aiTitle || p.summary || p.firstPrompt || p.lastPrompt || "", 200);
+    const agent = agents.get(session.sessionId);
+    const newestMs = newestMtimeOf(session);
+    const mtime = new Date(newestMs || scannedAt).toISOString();
+    const health = p.badLines > 0 ? "damaged" : p.userMessages + p.assistantMessages === 0 ? "empty" : "ok";
+    const lookup = sessionIdLookupKey(session.provider, session.sessionId);
+    const isRunning = Boolean(live.get(session.root.id)?.has(session.sessionId) || paseoAgentRunning(agent));
+    const state: SessionState = isRunning ? "running" : scannedAt - newestMs < this.recentMs ? "recent" : "idle";
+    const summary: SessionSummary = {
+      key: session.key,
+      provider: session.provider,
+      sessionId: session.sessionId,
+      projectKey: session.projectKey,
+      rootId: session.root.id,
+      title,
+      titleSource,
+      firstPrompt: p.firstPrompt,
+      cwd: p.cwd,
+      gitBranch: p.gitBranch,
+      startedAt: p.startedAt,
+      updatedAt: p.endedAt && p.endedAt > mtime ? p.endedAt : mtime,
+      userMessages: p.userMessages,
+      assistantMessages: p.assistantMessages,
+      bytes: session.transcript.size + session.sessionDirBytes + session.extraBytes + session.legacyAgents.reduce((sum, file) => sum + file.size, 0),
+      subagentCount: session.subagentCount,
+      state,
+      health,
+      badLines: p.badLines,
+      duplicateId: (bySessionId.get(lookup)?.length ?? 0) > 1,
+      paseo: agent ? { agentId: agent.agentId, title: agent.title, archived: agent.archived } : null,
+      snippet: null,
+    };
+    const metaHaystack = `${title}\n${p.cwd}\n${session.sessionId}\n${p.gitBranch}\n${session.provider}\n${agent?.title ?? ""}`.toLowerCase();
+    return { session, summary, newestMs, metaHaystack };
+  }
+
   /** Starts a scan unless one is running. A mutation during a scan makes it scan again. */
   private ensureScan(): Promise<void> {
     if (!this.scanPromise) {
@@ -136,11 +217,49 @@ export class SessionManager {
           const result = await this.scanner.scan(roots, (done, total) => {
             this.progress = { done, total };
           });
-          const live = new Map<string, Set<string>>();
-          for (const root of roots) live.set(root.id, await liveSessionIds(root.real, root.provider, this.alive));
-          const agents = await paseoAgents(this.home);
+          const [liveEntries, agents] = await Promise.all([
+            Promise.all(roots.map(async (root) => [root.id, await liveSessionIds(root.real, root.provider, this.alive)] as const)),
+            paseoAgents(this.home),
+          ]);
+          const live = new Map<string, Set<string>>(liveEntries);
           if (epoch === this.epoch || this.disposed) {
-            this.catalog = { ...result, scannedAt: this.now(), live, agents };
+            const scannedAt = this.now();
+            const indexed: IndexedSession[] = [];
+            const byProvider = emptyProviderCounts();
+            const countByRoot = new Map<string, number>();
+            const allProjectKeys = new Set<string>();
+            let totalBytes = 0;
+            let damagedCount = 0;
+            for (const session of result.sessions.values()) {
+              const entry = this.buildSummary(session, live, agents, result.bySessionId, scannedAt);
+              indexed.push(entry);
+              byProvider[session.provider] += 1;
+              countByRoot.set(session.root.id, (countByRoot.get(session.root.id) ?? 0) + 1);
+              allProjectKeys.add(session.projectKey);
+              totalBytes += entry.summary.bytes;
+              if (entry.summary.health === "damaged") damagedCount += 1;
+            }
+            const rootInfos: RootInfo[] = result.roots.map((root) => ({
+              id: root.id,
+              provider: root.provider,
+              path: root.real,
+              isDefault: root.isDefault,
+              source: root.source,
+              available: root.available,
+              sessions: countByRoot.get(root.id) ?? 0,
+            }));
+            this.catalog = {
+              ...result,
+              scannedAt,
+              live,
+              agents,
+              indexed,
+              byProvider,
+              rootInfos,
+              totalProjects: allProjectKeys.size,
+              totalBytes,
+              damagedCount,
+            };
             return;
           }
         }
@@ -172,50 +291,11 @@ export class SessionManager {
     return next;
   }
 
-  private stateOf(session: CatalogSession, catalog: Catalog): SessionState {
-    if (catalog.live.get(session.root.id)?.has(session.sessionId) || paseoAgentRunning(catalog.agents.get(session.sessionId))) return "running";
-    const newest = Math.max(
-      session.transcript.mtimeMs,
-      session.sessionDirNewestMs,
-      session.extraNewestMs,
-      ...session.legacyAgents.map((file) => file.mtimeMs),
-    );
-    return this.now() - newest < this.recentMs ? "recent" : "idle";
-  }
-
-  private summarize(session: CatalogSession, catalog: Catalog, snippet: string | null = null): SessionSummary {
-    const p = session.parsed;
-    const titleSource = p.customTitle ? "custom" : p.aiTitle ? "ai" : p.summary ? "summary" : p.firstPrompt ? "prompt" : "none";
-    const title = p.customTitle || p.aiTitle || p.summary || p.firstPrompt || p.lastPrompt;
-    const agent = catalog.agents.get(session.sessionId);
-    const newestMs = Math.max(session.transcript.mtimeMs, session.sessionDirNewestMs, session.extraNewestMs);
-    const mtime = new Date(newestMs || this.now()).toISOString();
-    const health = p.badLines > 0 ? "damaged" : p.userMessages + p.assistantMessages === 0 ? "empty" : "ok";
-    const lookup = sessionIdLookupKey(session.provider, session.sessionId);
-    return {
-      key: session.key,
-      provider: session.provider,
-      sessionId: session.sessionId,
-      projectKey: session.projectKey,
-      rootId: session.root.id,
-      title: clip(title || "", 200),
-      titleSource,
-      firstPrompt: p.firstPrompt,
-      cwd: p.cwd,
-      gitBranch: p.gitBranch,
-      startedAt: p.startedAt,
-      updatedAt: p.endedAt && p.endedAt > mtime ? p.endedAt : mtime,
-      userMessages: p.userMessages,
-      assistantMessages: p.assistantMessages,
-      bytes: session.transcript.size + session.sessionDirBytes + session.extraBytes + session.legacyAgents.reduce((sum, file) => sum + file.size, 0),
-      subagentCount: session.subagentCount,
-      state: this.stateOf(session, catalog),
-      health,
-      badLines: p.badLines,
-      duplicateId: (catalog.bySessionId.get(lookup)?.length ?? 0) > 1,
-      paseo: agent ? { agentId: agent.agentId, title: agent.title, archived: agent.archived } : null,
-      snippet,
-    };
+  private effectiveSummary(entry: IndexedSession, currentNow: number): SessionSummary {
+    if (entry.summary.state === "recent" && currentNow - entry.newestMs >= this.recentMs) {
+      return { ...entry.summary, state: "idle" };
+    }
+    return entry.summary;
   }
 
   async list(query: ListQuery): Promise<ListOutput> {
@@ -225,7 +305,7 @@ export class SessionManager {
     }
     const catalog = this.catalog;
     const scanning = this.scanPromise ? { ...this.progress } : null;
-    const trash = await this.trash.list();
+    const trash = await this.trashSummary(query.refresh);
     if (!catalog) {
       return {
         roots: [],
@@ -242,7 +322,7 @@ export class SessionManager {
           bytes: 0,
           active: 0,
           damaged: 0,
-          trashEntries: trash.entries.length,
+          trashEntries: trash.count,
           trashBytes: trash.bytes,
           byProvider: emptyProviderCounts(),
         },
@@ -250,27 +330,43 @@ export class SessionManager {
       };
     }
 
-    const all = [...catalog.sessions.values()].map((session) => ({ session, summary: this.summarize(session, catalog) }));
-    const byProvider = emptyProviderCounts();
-    for (const { summary } of all) byProvider[summary.provider] += 1;
-
-    const inProvider = query.provider === "all" ? all : all.filter(({ summary }) => summary.provider === query.provider);
-
+    const currentNow = this.now();
     const terms = searchTerms(query.search);
-    const matchesFilters = ({ session, summary }: (typeof all)[number]): boolean => {
-      if (query.state === "active" && summary.state === "idle") return false;
-      if (query.state === "idle" && summary.state !== "idle") return false;
-      if (query.health !== "all" && summary.health !== query.health) return false;
-      if (query.origin === "paseo" && !summary.paseo) return false;
-      if (query.origin === "native" && summary.paseo) return false;
-      if (!terms.length) return true;
-      const haystack = `${session.parsed.searchText}\n${summary.title.toLowerCase()}\n${summary.cwd.toLowerCase()}\n${session.sessionId.toLowerCase()}\n${summary.gitBranch.toLowerCase()}\n${summary.provider}\n${summary.paseo?.title.toLowerCase() ?? ""}`;
-      return terms.every((term) => haystack.includes(term));
-    };
+    const inProvider: { entry: IndexedSession; summary: SessionSummary }[] = [];
+    let activeCount = 0;
 
-    const filtered = inProvider.filter(matchesFilters);
+    for (const entry of catalog.indexed) {
+      const summary = this.effectiveSummary(entry, currentNow);
+      if (summary.state !== "idle") activeCount += 1;
+      if (query.provider === "all" || summary.provider === query.provider) {
+        inProvider.push({ entry, summary });
+      }
+    }
+
+    const filtered: { entry: IndexedSession; summary: SessionSummary }[] = [];
     const matchingByProject = new Map<string, number>();
-    for (const { summary } of filtered) matchingByProject.set(summary.projectKey, (matchingByProject.get(summary.projectKey) ?? 0) + 1);
+
+    for (const item of inProvider) {
+      const { entry, summary } = item;
+      if (query.state === "active" && summary.state === "idle") continue;
+      if (query.state === "idle" && summary.state !== "idle") continue;
+      if (query.health !== "all" && summary.health !== query.health) continue;
+      if (query.origin === "paseo" && !summary.paseo) continue;
+      if (query.origin === "native" && summary.paseo) continue;
+      if (terms.length) {
+        const text = entry.session.parsed.searchText;
+        let matchedAll = true;
+        for (const term of terms) {
+          if (!entry.metaHaystack.includes(term) && !text.includes(term)) {
+            matchedAll = false;
+            break;
+          }
+        }
+        if (!matchedAll) continue;
+      }
+      filtered.push(item);
+      matchingByProject.set(summary.projectKey, (matchingByProject.get(summary.projectKey) ?? 0) + 1);
+    }
 
     const inProject = query.projectKey ? filtered.filter(({ summary }) => summary.projectKey === query.projectKey) : filtered;
     const direction = query.direction === "asc" ? 1 : -1;
@@ -282,18 +378,17 @@ export class SessionManager {
 
     const pages = Math.max(1, Math.ceil(inProject.length / query.pageSize));
     const page = Math.min(query.page, pages - 1);
-    const items = inProject.slice(page * query.pageSize, (page + 1) * query.pageSize).map(({ session, summary }) => {
+    const items = inProject.slice(page * query.pageSize, (page + 1) * query.pageSize).map(({ entry, summary }) => {
       if (!terms.length) return summary;
-      const text = session.parsed.searchText;
-      return { ...summary, snippet: snippetFor(text, terms[0]) };
+      return { ...summary, snippet: snippetFor(entry.session.parsed.searchText, terms[0]) };
     });
 
     // Build unified projects across the active provider slice.
     const projectMap = new Map<string, { path: string; providers: Set<ProviderId>; sessions: number; bytes: number; updatedAt: string | null }>();
-    for (const { session, summary } of inProvider) {
+    for (const { entry, summary } of inProvider) {
       let group = projectMap.get(summary.projectKey);
       if (!group) {
-        group = { path: session.projectLabel, providers: new Set(), sessions: 0, bytes: 0, updatedAt: null };
+        group = { path: entry.session.projectLabel, providers: new Set(), sessions: 0, bytes: 0, updatedAt: null };
         projectMap.set(summary.projectKey, group);
       }
       group.providers.add(summary.provider);
@@ -313,32 +408,22 @@ export class SessionManager {
     }));
     projects.sort((a, b) => (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "") || a.path.localeCompare(b.path));
 
-    const allProjectKeys = new Set(all.map(({ summary }) => summary.projectKey));
-
     return {
-      roots: catalog.roots.map((root) => ({
-        id: root.id,
-        provider: root.provider,
-        path: root.real,
-        isDefault: root.isDefault,
-        source: root.source,
-        available: root.available,
-        sessions: all.filter((entry) => entry.session.root.id === root.id).length,
-      })),
+      roots: catalog.rootInfos,
       projects,
       items,
       total: inProject.length,
       page,
       pageSize: query.pageSize,
       stats: {
-        sessions: all.length,
-        projects: allProjectKeys.size,
-        bytes: all.reduce((sum, entry) => sum + entry.summary.bytes, 0),
-        active: all.filter((entry) => entry.summary.state !== "idle").length,
-        damaged: all.filter((entry) => entry.summary.health === "damaged").length,
-        trashEntries: trash.entries.length,
+        sessions: catalog.indexed.length,
+        projects: catalog.totalProjects,
+        bytes: catalog.totalBytes,
+        active: activeCount,
+        damaged: catalog.damagedCount,
+        trashEntries: trash.count,
         trashBytes: trash.bytes,
-        byProvider,
+        byProvider: catalog.byProvider,
       },
       scannedAt: new Date(catalog.scannedAt).toISOString(),
       scanning,
@@ -351,17 +436,25 @@ export class SessionManager {
     const session = catalog.sessions.get(key);
     if (!session) throw new OperationError("not_found");
     const plan = await planSession(session, catalog);
-    const summary = this.summarize(session, catalog);
+    const currentNow = this.now();
+    const entry = catalog.indexed.find((item) => item.session.key === key) ?? this.buildSummary(session, catalog.live, catalog.agents, catalog.bySessionId, currentNow);
+    const summary = this.effectiveSummary(entry, currentNow);
+
     const related: DetailOutput["related"] = [];
-    if (session.parsed.uuids.size > 0) {
-      for (const other of catalog.sessions.values()) {
-        if (other.key === key || other.root.id !== session.root.id) continue;
+    const uuids = session.parsed.uuids;
+    if (uuids.size > 0) {
+      for (const otherEntry of catalog.indexed) {
+        const other = otherEntry.session;
+        if (other.key === key || other.root.id !== session.root.id || other.parsed.uuids.size === 0) continue;
+        // Iterate over the smaller UUID set for fast intersection.
+        const [smaller, larger] = uuids.size <= other.parsed.uuids.size ? [uuids, other.parsed.uuids] : [other.parsed.uuids, uuids];
         let shared = 0;
-        for (const uuid of session.parsed.uuids) if (other.parsed.uuids.has(uuid)) shared += 1;
-        if (shared) related.push({ key: other.key, title: this.summarize(other, catalog).title, shared });
+        for (const uuid of smaller) if (larger.has(uuid)) shared += 1;
+        if (shared) related.push({ key: other.key, title: otherEntry.summary.title, shared });
       }
       related.sort((a, b) => b.shared - a.shared);
     }
+
     let preview: DetailOutput["preview"] = [];
     try {
       if (session.provider === "claude") {
@@ -414,6 +507,7 @@ export class SessionManager {
   async previewDelete(keys: string[]): Promise<PreviewOutput> {
     const catalog = await this.fresh();
     const items: PreviewItem[] = [];
+    const byKey = new Map(catalog.indexed.map((item) => [item.session.key, item]));
     for (const key of [...new Set(keys)]) {
       const session = catalog.sessions.get(key);
       if (!session) {
@@ -426,7 +520,7 @@ export class SessionManager {
       items.push({
         key,
         provider: session.provider,
-        title: this.summarize(session, catalog).title,
+        title: byKey.get(key)?.summary.title ?? "",
         fingerprint: plan.fingerprint,
         files: plan.files.map((file) => ({ path: file.rel, kind: file.kind, bytes: file.bytes })),
         bytes: plan.files.reduce((sum, file) => sum + file.bytes, 0),
@@ -448,6 +542,7 @@ export class SessionManager {
       const seen = new Set<string>();
       // A fresh catalog: another client may have deleted some of these already.
       const catalog = await this.fresh();
+      const byKey = new Map(catalog.indexed.map((item) => [item.session.key, item]));
       for (const { key, fingerprint } of items) {
         if (seen.has(key)) continue;
         seen.add(key);
@@ -462,14 +557,14 @@ export class SessionManager {
           const blocked = await this.blockedNow(session);
           if (blocked) throw new OperationError(blocked);
           if (this.recentlyWritten(Math.max(0, ...plan.files.map((file) => file.newestMs)))) throw new OperationError("recent");
-          const summary = this.summarize(session, catalog);
+          const summary = byKey.get(key)?.summary;
           const trashId = await this.trash.moveIn(
             {
               key,
               provider: session.provider,
               sessionId: session.sessionId,
-              title: summary.title,
-              cwd: summary.cwd,
+              title: summary?.title ?? "",
+              cwd: summary?.cwd ?? session.parsed.cwd,
               root: session.root,
               projectDir: session.projectDir,
             },
@@ -481,6 +576,7 @@ export class SessionManager {
             },
           );
           this.epoch += 1;
+          this.trashCache = null;
           catalog.sessions.delete(key);
           const lookup = sessionIdLookupKey(session.provider, session.sessionId);
           const siblings = (catalog.bySessionId.get(lookup) ?? []).filter((other) => other !== key);
@@ -492,6 +588,7 @@ export class SessionManager {
         }
       }
       this.epoch += 1;
+      this.trashCache = null;
       await this.ensureScan();
       return { results };
     });
@@ -499,6 +596,7 @@ export class SessionManager {
 
   async listTrash(): Promise<TrashListOutput> {
     const { entries, bytes } = await this.trash.list();
+    this.trashCache = { count: entries.length, bytes, at: this.now() };
     return { entries, bytes, path: this.trash.dir };
   }
 
@@ -515,6 +613,7 @@ export class SessionManager {
         }
       }
       this.epoch += 1;
+      this.trashCache = null;
       await this.ensureScan();
       return { results };
     });
@@ -532,6 +631,7 @@ export class SessionManager {
           results.push({ id: trashId, ok: false, reason: reasonOf(error), trashId });
         }
       }
+      this.trashCache = null;
       return { results };
     });
   }

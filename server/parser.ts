@@ -9,7 +9,7 @@ import { clip } from "../shared/format";
  */
 
 /** Conversational text kept per session for full-text search. Tool output is not indexed. */
-export const MAX_SEARCH_TEXT = 256 * 1024;
+export const MAX_SEARCH_TEXT = 128 * 1024;
 const MAX_PROMPT = 400;
 
 export interface ParsedTranscript {
@@ -72,7 +72,9 @@ class SearchBuffer {
   private size = 0;
   add(text: string): void {
     if (!text || this.size >= MAX_SEARCH_TEXT) return;
-    const piece = text.slice(0, MAX_SEARCH_TEXT - this.size).toLowerCase();
+    const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (!normalized) return;
+    const piece = normalized.slice(0, MAX_SEARCH_TEXT - this.size);
     this.parts.push(piece);
     this.size += piece.length;
   }
@@ -229,6 +231,8 @@ export async function readPreview(path: string, head = 4, tail = 4, max = 600): 
   const lines = createInterface({ input: stream, crlfDelay: Infinity });
   try {
     for await (const line of lines) {
+      // Fast-skip large non-conversational records (progress, snapshots, tool-only frames) before JSON.parse.
+      if (!line.includes('"user"') && !line.includes('"assistant"')) continue;
       let o: Record<string, unknown>;
       try {
         o = object(JSON.parse(line));
