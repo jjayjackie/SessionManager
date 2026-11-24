@@ -1,9 +1,10 @@
 import { lstat, readdir, realpath } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import type { ProviderId } from "../shared/schema";
 
 /**
- * Filesystem guards. The plugin only ever moves paths it computed itself from a fixed list of
- * Claude artifact locations, and each of those passes through these checks first.
+ * Filesystem guards. The plugin only ever moves paths it computed itself from a fixed, per-provider
+ * allowlist of session artifact locations, and each of those passes through these checks first.
  */
 
 export class UnsafePathError extends Error {
@@ -21,13 +22,19 @@ export function isInside(parent: string, child: string): boolean {
   return rel !== "" && !rel.startsWith(`..${sep}`) && rel !== ".." && !isAbsolute(rel);
 }
 
-/** Top-level folders of a Claude directory that may hold session data. Nothing else is ever touched. */
-export const MANAGED_TOP_LEVEL = new Set(["projects", "todos", "file-history", "session-env", "debug", "tasks"]);
+/** Top-level folders of each provider directory that may hold session data. Nothing else is ever touched. */
+export const MANAGED_TOP_LEVEL: Record<ProviderId, ReadonlySet<string>> = {
+  claude: new Set(["projects", "todos", "file-history", "session-env", "debug", "tasks"]),
+  codex: new Set(["sessions", "archived_sessions", "tui-thread-reference-capabilities", "shell_snapshots"]),
+  antigravity: new Set(["conversations", "brain", "annotations", "presence"]),
+};
 
-function managedTop(root: string, absolute: string): string {
-  if (!isInside(root, absolute)) throw new UnsafePathError(`Outside the Claude directory: ${absolute}`);
+function managedTop(provider: ProviderId, root: string, absolute: string): string {
+  if (!isInside(root, absolute)) throw new UnsafePathError(`Outside the ${provider} directory: ${absolute}`);
   const segments = relative(root, absolute).split(sep);
-  if (segments.length < 2 || !MANAGED_TOP_LEVEL.has(segments[0])) throw new UnsafePathError(`Not a session location: ${absolute}`);
+  if (segments.length < 2 || !MANAGED_TOP_LEVEL[provider].has(segments[0])) {
+    throw new UnsafePathError(`Not a managed ${provider} session location: ${absolute}`);
+  }
   return join(root, segments[0]);
 }
 
@@ -40,31 +47,31 @@ function within(base: string, path: string): boolean {
  * physical path) and is not itself a symbolic link. The top-level folder may be a symbolic link
  * (for example `projects` moved to another disk); no other link is followed.
  */
-export async function assertContained(root: string, absolute: string): Promise<void> {
+export async function assertContained(root: string, absolute: string, provider: ProviderId = "claude"): Promise<void> {
   const path = resolve(absolute);
-  const base = await realpath(managedTop(root, path));
+  const base = await realpath(managedTop(provider, root, path));
   const parent = await realpath(dirname(path));
-  if (!within(base, parent)) throw new UnsafePathError(`Parent escapes the Claude directory: ${absolute}`);
+  if (!within(base, parent)) throw new UnsafePathError(`Parent escapes the ${provider} directory: ${absolute}`);
   const info = await lstat(path);
   if (info.isSymbolicLink()) throw new UnsafePathError(`Symbolic link refused: ${absolute}`);
 }
 
 /** Asserts a restore target's existing ancestors stay inside the managed folder before any directory is created. */
-export async function assertRestorable(root: string, absolute: string): Promise<void> {
+export async function assertRestorable(root: string, absolute: string, provider: ProviderId = "claude"): Promise<void> {
   const path = resolve(absolute);
-  const top = managedTop(root, path);
+  const top = managedTop(provider, root, path);
   let base: string;
   try {
     base = await realpath(top);
   } catch {
-    if ((await realpath(root)) !== root) throw new UnsafePathError(`Claude directory moved: ${root}`);
+    if ((await realpath(root)) !== root) throw new UnsafePathError(`${provider} directory moved: ${root}`);
     return; // The folder is gone entirely; it is recreated as a plain directory.
   }
   let ancestor = dirname(path);
   for (;;) {
     try {
       const real = await realpath(ancestor);
-      if (!within(base, real)) throw new UnsafePathError(`Parent escapes the Claude directory: ${absolute}`);
+      if (!within(base, real)) throw new UnsafePathError(`Parent escapes the ${provider} directory: ${absolute}`);
       return;
     } catch (error) {
       if (error instanceof UnsafePathError) throw error;

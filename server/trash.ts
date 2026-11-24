@@ -2,22 +2,25 @@ import { randomBytes } from "node:crypto";
 import { cp, lstat, mkdir, readdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { z } from "zod";
-import { FileKindSchema, TRASH_ID, type ReasonCode, type TrashEntry } from "../shared/schema";
+import { FileKindSchema, ProviderSchema, TRASH_ID, type ProviderId, type ReasonCode, type TrashEntry } from "../shared/schema";
 import type { PlannedFile } from "./artifacts";
-import type { ClaudeRoot } from "./roots";
-import { PROJECT_DIR } from "./scanner";
+import type { AgentRoot } from "./roots";
 import { assertContained, assertRestorable, resolveRelative, treeSize, UnsafePathError } from "./safety";
-import { restoreToIndex } from "./sessions-index";
+import { restoreToAntigravityIndex, restoreToCodexIndex, restoreToIndex } from "./sessions-index";
 
 /**
- * Recoverable deletion. Each deleted session becomes `<trash>/<trash id>/` holding
- * `manifest.json` and `payload/<n>` for every moved file or directory. The manifest records each
- * item's path relative to its Claude directory; restore re-validates those paths, so an edited
- * manifest cannot write outside a configured Claude directory.
+ * Recoverable deletion across Claude Code, Codex, and Antigravity. Each deleted session becomes
+ * `<trash>/<trash id>/` holding `manifest.json` and `payload/<n>` for every moved file or
+ * directory. The manifest records each item's path relative to its provider directory; restore
+ * re-validates those paths against the provider's allowlist, so an edited manifest cannot write
+ * outside a configured agent directory.
  */
 
+const SAFE_SCOPE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9._/-]{1,255}$/;
+
 const ManifestSchema = z.object({
-  version: z.literal(1),
+  version: z.union([z.literal(1), z.literal(2)]),
+  provider: ProviderSchema.default("claude"),
   trashId: z.string().regex(TRASH_ID),
   status: z.enum(["pending", "complete"]),
   key: z.string(),
@@ -25,7 +28,7 @@ const ManifestSchema = z.object({
   title: z.string(),
   cwd: z.string(),
   rootPath: z.string(),
-  projectDir: z.string().regex(PROJECT_DIR),
+  projectDir: z.string().regex(SAFE_SCOPE),
   deletedAt: z.string(),
   items: z.array(z.object({ rel: z.string(), kind: FileKindSchema, bytes: z.number(), stored: z.string().regex(/^\d{1,6}$/) })),
   indexEntries: z.array(z.unknown()),
@@ -67,10 +70,11 @@ export async function movePath(source: string, target: string): Promise<void> {
 
 export interface TrashMeta {
   key: string;
+  provider: ProviderId;
   sessionId: string;
   title: string;
   cwd: string;
-  root: ClaudeRoot;
+  root: AgentRoot;
   projectDir: string;
 }
 
@@ -100,19 +104,28 @@ export class Trash {
   }
 
   /**
-   * Moves `files` into a new trash entry. Every path is checked before anything moves; a failure
-   * part-way moves the already-moved items back. `afterMove` runs once all items are in the trash
-   * and returns the sessions-index entries to keep for a later restore.
+   * Moves `files` into a new trash entry. Every path is checked against the provider allowlist
+   * before anything moves; a failure part-way moves the already-moved items back. `afterMove` runs
+   * once all items are in the trash and returns index entries to keep for a later restore.
    */
   async moveIn(meta: TrashMeta, files: PlannedFile[], afterMove: () => Promise<unknown[]>): Promise<string> {
-    for (const file of files) await assertContained(meta.root.real, file.absolute);
+    for (const file of files) await assertContained(meta.root.real, file.absolute, meta.provider);
     const trashId = `${this.now()}-${randomBytes(6).toString("hex")}`;
     const entryDir = this.entryDir(trashId);
     await mkdir(this.dir, { recursive: true, mode: 0o700 });
     await mkdir(join(entryDir, "payload"), { recursive: true, mode: 0o700 });
     const manifest: Manifest = {
-      version: 1, trashId, status: "pending", key: meta.key, sessionId: meta.sessionId, title: meta.title, cwd: meta.cwd,
-      rootPath: meta.root.real, projectDir: meta.projectDir, deletedAt: new Date(this.now()).toISOString(),
+      version: 2,
+      provider: meta.provider,
+      trashId,
+      status: "pending",
+      key: meta.key,
+      sessionId: meta.sessionId,
+      title: meta.title,
+      cwd: meta.cwd,
+      rootPath: meta.root.real,
+      projectDir: meta.projectDir,
+      deletedAt: new Date(this.now()).toISOString(),
       items: files.map((file, index) => ({ rel: file.rel, kind: file.kind, bytes: file.bytes, stored: String(index) })),
       indexEntries: [],
     };
@@ -140,7 +153,7 @@ export class Trash {
     try {
       indexEntries = await afterMove();
     } catch {
-      // The transcript is already gone; Claude Code rebuilds a stale index entry on its own.
+      // The session files are already safely in trash; agents rebuild stale indexes on their own.
     }
     await this.writeManifest(trashId, { ...manifest, status: "complete", indexEntries });
     return trashId;
@@ -159,9 +172,16 @@ export class Trash {
       try {
         const manifest = await this.readManifest(name);
         entries.push({
-          trashId: name, sessionId: manifest.sessionId, title: manifest.title, cwd: manifest.cwd, rootPath: manifest.rootPath,
-          projectDirectory: manifest.projectDir, deletedAt: manifest.deletedAt,
-          bytes: manifest.items.reduce((sum, item) => sum + item.bytes, 0), files: manifest.items.length,
+          trashId: name,
+          provider: manifest.provider,
+          sessionId: manifest.sessionId,
+          title: manifest.title,
+          cwd: manifest.cwd,
+          rootPath: manifest.rootPath,
+          projectDirectory: manifest.projectDir,
+          deletedAt: manifest.deletedAt,
+          bytes: manifest.items.reduce((sum, item) => sum + item.bytes, 0),
+          files: manifest.items.length,
           status: manifest.status === "complete" ? "complete" : "incomplete",
         });
       } catch {
@@ -173,7 +193,19 @@ export class Trash {
           continue;
         }
         const deletedAt = new Date(Number(name.slice(0, 13))).toISOString();
-        entries.push({ trashId: name, sessionId: "", title: "", cwd: "", rootPath: "", projectDirectory: "", deletedAt, bytes, files: 0, status: "invalid" });
+        entries.push({
+          trashId: name,
+          provider: "claude",
+          sessionId: "",
+          title: "",
+          cwd: "",
+          rootPath: "",
+          projectDirectory: "",
+          deletedAt,
+          bytes,
+          files: 0,
+          status: "invalid",
+        });
       }
     }
     entries.sort((a, b) => b.deletedAt.localeCompare(a.deletedAt));
@@ -181,9 +213,9 @@ export class Trash {
   }
 
   /** Restores every item of an entry, or nothing when any target already exists. */
-  async restore(trashId: string, roots: ClaudeRoot[]): Promise<Manifest> {
+  async restore(trashId: string, roots: AgentRoot[]): Promise<Manifest> {
     const manifest = await this.readManifest(trashId);
-    const root = roots.find((candidate) => candidate.real === manifest.rootPath);
+    const root = roots.find((candidate) => candidate.provider === manifest.provider && candidate.real === manifest.rootPath);
     if (!root) throw new OperationError("root_unavailable");
     const entryDir = this.entryDir(trashId);
     const plan: { from: string; to: string }[] = [];
@@ -191,7 +223,7 @@ export class Trash {
       let target: string;
       try {
         target = resolveRelative(root.real, item.rel);
-        await assertRestorable(root.real, target);
+        await assertRestorable(root.real, target, manifest.provider);
       } catch {
         throw new OperationError("unsafe_path");
       }
@@ -203,7 +235,7 @@ export class Trash {
     const moved: { from: string; to: string }[] = [];
     try {
       for (const item of plan) {
-        await assertRestorable(root.real, item.to);
+        await assertRestorable(root.real, item.to, manifest.provider);
         await mkdir(dirname(item.to), { recursive: true });
         await movePath(item.from, item.to);
         moved.push(item);
@@ -220,9 +252,15 @@ export class Trash {
       throw new OperationError(error instanceof UnsafePathError ? "unsafe_path" : "io_error", String(error));
     }
     try {
-      await restoreToIndex(join(root.real, "projects", manifest.projectDir), manifest.sessionId, manifest.indexEntries);
+      if (manifest.provider === "claude") {
+        await restoreToIndex(join(root.real, "projects", manifest.projectDir), manifest.sessionId, manifest.indexEntries);
+      } else if (manifest.provider === "codex") {
+        await restoreToCodexIndex(root.real, manifest.sessionId, manifest.indexEntries);
+      } else {
+        await restoreToAntigravityIndex(root.real, manifest.sessionId, manifest.indexEntries);
+      }
     } catch {
-      // Claude Code rebuilds the index from transcripts when needed.
+      // Native tools rebuild stale indexes from session files when needed.
     }
     await rm(entryDir, { recursive: true, force: true });
     return manifest;
