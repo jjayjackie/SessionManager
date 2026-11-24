@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { ReasonCodeSchema, WarningSchema } from "../shared/schema";
+import { PROVIDERS, ReasonCodeSchema, WarningSchema } from "../shared/schema";
 
 /**
  * Mirrors the checks `defineTranslations` runs when the client bundle loads (Paseo plugin SDK,
@@ -47,8 +47,9 @@ describe("translations", () => {
     assert.deepEqual(missing, []);
   });
 
-  it("has a message for every reason, warning, and host status the UI can show", async () => {
+  it("has a message for every provider, reason, warning, and host status the UI can show", async () => {
     const en = await load("en");
+    for (const provider of PROVIDERS) assert.ok(en.has(`provider.${provider}`), provider);
     for (const code of ReasonCodeSchema.options) assert.ok(en.has(`reason.${code}`), code);
     for (const code of WarningSchema.shape.code.options) assert.ok(en.has(`warning.${code}`), code);
     for (const status of ["idle", "connecting", "online", "offline", "error"]) assert.ok(en.has(`host.${status}`), status);
