@@ -3,10 +3,11 @@ import { Icon, Modal } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState, type ReactNode } from "react";
 import { ActivityIndicator, Pressable, Text, View, type StyleProp, type TextStyle, type ViewStyle } from "react-native";
 import type { ProviderId } from "../shared/schema";
+import { PROVIDER_BRAND } from "./icons/brands";
 
 /**
- * Clean industrial React Native primitives styled exclusively with Paseo theme tokens.
- * Tight radii (4-6px), hairline borders, uppercase tracked micro-labels, tabular numbers.
+ * Clean industrial React Native primitives styled with Paseo theme tokens and official provider
+ * SVG brand marks. Tight radii (4-6px), hairline borders, tracked micro-labels, tabular numbers.
  */
 
 export type Tone = "neutral" | "accent" | "success" | "warning" | "danger";
@@ -26,26 +27,64 @@ export function toneColor(theme: PluginTheme, tone: Tone): string {
   }
 }
 
-export function providerTone(provider: ProviderId): Tone {
-  switch (provider) {
-    case "claude":
-      return "accent";
-    case "codex":
-      return "success";
-    case "antigravity":
-      return "warning";
-  }
+export function providerBrandColor(provider: ProviderId): string {
+  return PROVIDER_BRAND[provider].color;
 }
 
-export function providerShortLabel(provider: ProviderId): string {
-  switch (provider) {
-    case "claude":
-      return "CLAUDE";
-    case "codex":
-      return "CODEX";
-    case "antigravity":
-      return "AGY";
+/** Renders the official SVG brand logo for Claude Code, Codex, or Antigravity. */
+export function ProviderLogo({ provider, size = 14 }: { provider: ProviderId; size?: number }) {
+  return <Icon icon={PROVIDER_BRAND[provider].icon} size={size} color={PROVIDER_BRAND[provider].color} />;
+}
+
+/**
+ * Compact framed industrial brand emblem. By default shows only the official SVG logo (clean &
+ * uncluttered for session rows, trash rows, and dialogs); pass `label` for inspector headers.
+ */
+export function ProviderTag({ theme, provider, label, size = 13 }: { theme: PluginTheme; provider: ProviderId; label?: string; size?: number }) {
+  const brand = PROVIDER_BRAND[provider];
+  const c = theme.colors;
+  if (!label) {
+    return (
+      <View
+        style={{
+          width: 22,
+          height: 22,
+          borderRadius: 5,
+          borderWidth: 1,
+          borderColor: c.border,
+          borderLeftWidth: 2,
+          borderLeftColor: brand.color,
+          backgroundColor: c.surface1,
+          alignItems: "center",
+          justifyContent: "center",
+        }}
+      >
+        <Icon icon={brand.icon} size={size} color={brand.color} />
+      </View>
+    );
   }
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 6,
+        borderWidth: 1,
+        borderColor: c.border,
+        borderLeftWidth: 2.5,
+        borderLeftColor: brand.color,
+        borderRadius: 5,
+        paddingHorizontal: 8,
+        paddingVertical: 3,
+        backgroundColor: c.surface1,
+      }}
+    >
+      <Icon icon={brand.icon} size={size} color={brand.color} />
+      <Text numberOfLines={1} style={{ color: c.foreground, fontSize: 11, fontWeight: "700", letterSpacing: 0.2 }}>
+        {label}
+      </Text>
+    </View>
+  );
 }
 
 export function useText(theme: PluginTheme) {
@@ -164,36 +203,6 @@ export function Badge({ theme, label, tone = "neutral", icon }: { theme: PluginT
       </Text>
     </View>
   );
-}
-
-/** Crisp industrial provider indicator tag (`CLAUDE`, `CODEX`, `AGY`). */
-export function ProviderTag({ theme, provider, label }: { theme: PluginTheme; provider: ProviderId; label?: string }) {
-  const color = toneColor(theme, providerTone(provider));
-  return (
-    <View
-      style={{
-        flexDirection: "row",
-        alignItems: "center",
-        gap: 4,
-        borderWidth: 1,
-        borderColor: theme.colors.border,
-        borderLeftWidth: 2.5,
-        borderLeftColor: color,
-        borderRadius: 4,
-        paddingHorizontal: 6,
-        paddingVertical: 1,
-        backgroundColor: theme.colors.surface1,
-      }}
-    >
-      <Text numberOfLines={1} style={{ color: theme.colors.foreground, fontSize: 10, fontWeight: "700", fontFamily: "monospace", letterSpacing: 0.5 }}>
-        {label ?? providerShortLabel(provider)}
-      </Text>
-    </View>
-  );
-}
-
-export function ProviderDot({ theme, provider }: { theme: PluginTheme; provider: ProviderId }) {
-  return <View style={{ width: 6, height: 6, borderRadius: 2, backgroundColor: toneColor(theme, providerTone(provider)) }} />;
 }
 
 export function Banner({ theme, tone, text, action }: { theme: PluginTheme; tone: Tone; text: string; action?: ReactNode }) {

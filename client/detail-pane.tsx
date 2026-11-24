@@ -8,7 +8,7 @@ import { useSessionDetail } from "./data";
 import { errorText, formatDateTime, reasonFromError } from "./format";
 import { messages } from "./messages";
 import { useSessionBadges } from "./session-list";
-import { Badge, Banner, Button, Divider, Field, MetricCard, ProviderTag, SectionHeader } from "./ui";
+import { Badge, Banner, Button, Divider, Field, MetricCard, ProviderLogo, ProviderTag, SectionHeader, providerBrandColor } from "./ui";
 
 interface Props {
   theme: PluginTheme;
@@ -106,7 +106,7 @@ function DetailBody({
       {/* Inspector Header */}
       <View style={{ gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          <ProviderTag theme={theme} provider={s.provider} />
+          <ProviderTag theme={theme} provider={s.provider} label={providerName} />
           {badges.map((badge) => (
             <Badge key={badge.key} theme={theme} label={badge.label} tone={badge.tone} icon={badge.icon} />
           ))}
@@ -263,13 +263,16 @@ function DetailBody({
                 borderWidth: 1,
                 borderColor: c.border,
                 borderLeftWidth: 2.5,
-                borderLeftColor: message.role === "user" ? c.accent : c.border,
+                borderLeftColor: message.role === "user" ? c.accent : providerBrandColor(s.provider),
               }}
             >
               <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <Text style={{ color: message.role === "user" ? c.accent : c.foregroundMuted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5, textTransform: "uppercase" }}>
-                  {message.role === "user" ? t("detail.you") : providerName}
-                </Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                  {message.role === "assistant" ? <ProviderLogo provider={s.provider} size={11} /> : null}
+                  <Text style={{ color: message.role === "user" ? c.accent : c.foregroundMuted, fontSize: 10, fontWeight: "700", letterSpacing: 0.5, textTransform: "uppercase" }}>
+                    {message.role === "user" ? t("detail.you") : providerName}
+                  </Text>
+                </View>
                 {message.timestamp ? (
                   <Text style={{ color: c.foregroundMuted, fontSize: 10.5, fontFamily: "monospace" }}>{formatDateTime(message.timestamp, locale)}</Text>
                 ) : null}

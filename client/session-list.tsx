@@ -7,7 +7,7 @@ import { formatBytes } from "../shared/format";
 import type { SessionSummary } from "../shared/schema";
 import { formatAge } from "./format";
 import { messages } from "./messages";
-import { Badge, Button, Checkbox, ProviderTag } from "./ui";
+import { Badge, Button, Checkbox, ProviderTag, providerBrandColor } from "./ui";
 
 export function useSessionBadges() {
   const { t } = useTranslation(messages);
@@ -57,7 +57,7 @@ const SessionRow = memo(function SessionRow({ theme, session, selected, active, 
         borderBottomColor: c.border,
         backgroundColor: active ? c.surface2 : selected ? c.surface1 : "transparent",
         borderLeftWidth: 2.5,
-        borderLeftColor: active ? c.accent : selected ? c.border : "transparent",
+        borderLeftColor: active ? providerBrandColor(session.provider) : selected ? c.border : "transparent",
       }}
     >
       <View style={{ paddingTop: 3 }}>
