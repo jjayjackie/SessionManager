@@ -12,13 +12,13 @@ function SidebarItem({ currentScreen, openScreen }: PluginSidebarItemProps) {
 export default function contribute(client: PluginClientContext) {
   const removers = [
     client.addScreen({ id: SCREEN, title: messages.message("app.title"), Component: SessionManagerScreen }),
-    client.addSidebarHeaderItem({ id: "claude-sessions", title: messages.message("app.sidebar"), Component: SidebarItem }),
+    client.addSidebarHeaderItem({ id: "session-manager", title: messages.message("app.sidebar"), Component: SidebarItem }),
     client.addCommandCenterItem({
-      id: "open-claude-sessions",
+      id: "open-session-manager",
       title: messages.message("app.open"),
       icon: "History",
       context: "global",
-      keywords: ["claude", "session", "sessions", "history", "resume", "trash", "会话", "历史", "回收站"],
+      keywords: ["session", "sessions", "manager", "claude", "codex", "antigravity", "agy", "history", "resume", "trash", "会话", "历史", "回收站"],
       onSelect({ openScreen }) {
         openScreen({ screenId: SCREEN });
       },
