@@ -1,7 +1,7 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useHosts, useTranslation, type PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, Modal, ScrollView, TextInput } from "@getpaseo/plugin/client/ui";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import { formatBytes } from "../shared/format";
 import {
@@ -21,6 +21,7 @@ import { useRefresh, useSessionList } from "./data";
 import { DeleteDialog } from "./delete-dialog";
 import { DetailPane } from "./detail-pane";
 import { errorText, formatTime } from "./format";
+import { SESSION_MANAGER_ICON } from "./icons/brands";
 import { messages } from "./messages";
 import { SessionList } from "./session-list";
 import { TrashView } from "./trash-view";
@@ -45,9 +46,20 @@ const DEFAULT_FILTERS: Filters = {
   pageSize: 50,
 };
 
-/** View preferences survive leaving the screen, per host, for the app session. */
+/** View preferences survive leaving the screen, per host, capped to avoid unbounded growth. */
+const MAX_REMEMBERED_HOSTS = 32;
 const remembered = new Map<string, { filters: Filters; projectKey: string | null }>();
 
+function rememberHost(hostId: string, state: { filters: Filters; projectKey: string | null }) {
+  remembered.delete(hostId);
+  remembered.set(hostId, state);
+  if (remembered.size > MAX_REMEMBERED_HOSTS) {
+    const oldest = remembered.keys().next().value;
+    if (oldest !== undefined) remembered.delete(oldest);
+  }
+}
+
+const XL = 1280;
 const WIDE = 1080;
 const MEDIUM = 720;
 
@@ -61,13 +73,83 @@ export function SessionManagerScreen(props: PluginScreenProps) {
   return <ManagerView key={props.host.id} {...props} />;
 }
 
+/**
+ * Isolated search input so typing characters never re-renders the project rail, session list,
+ * or detail inspector until the 250ms debounce commits the query.
+ */
+const SearchBox = memo(function SearchBox({
+  theme,
+  compact,
+  placeholder,
+  clearLabel,
+  resetToken,
+  onCommit,
+}: {
+  theme: PluginTheme;
+  compact: boolean;
+  placeholder: string;
+  clearLabel: string;
+  resetToken: number;
+  onCommit(value: string): void;
+}) {
+  const [draft, setDraft] = useState("");
+  const c = theme.colors;
+
+  useEffect(() => {
+    if (resetToken > 0) setDraft("");
+  }, [resetToken]);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      onCommit(draft.trim());
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [draft, onCommit]);
+
+  return (
+    <View
+      style={{
+        flex: compact ? undefined : 1,
+        minWidth: compact ? undefined : 220,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+        minHeight: 32,
+        paddingHorizontal: 10,
+        borderRadius: 5,
+        borderWidth: 1,
+        borderColor: draft ? c.accent : c.border,
+        backgroundColor: c.surface1,
+      }}
+    >
+      <Icon name="Search" size={14} color={c.foregroundMuted} />
+      <TextInput
+        value={draft}
+        onChangeText={setDraft}
+        placeholder={placeholder}
+        placeholderTextColor={c.foregroundMuted}
+        accessibilityLabel={placeholder}
+        autoCapitalize="none"
+        autoCorrect={false}
+        returnKeyType="search"
+        style={{ flex: 1, color: c.foreground, fontSize: 13, paddingVertical: 6 }}
+      />
+      {draft ? (
+        <Pressable accessibilityRole="button" accessibilityLabel={clearLabel} hitSlop={8} onPress={() => setDraft("")}>
+          <Icon name="X" size={14} color={c.foregroundMuted} />
+        </Pressable>
+      ) : null}
+    </View>
+  );
+});
+
 function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
   const { t, locale } = useTranslation(messages);
   const c = theme.colors;
   const saved = remembered.get(host.id);
   const [tab, setTab] = useState<"sessions" | "trash">("sessions");
-  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
+  const [searchResetToken, setSearchResetToken] = useState(0);
   const [filters, setFilters] = useState<Filters>(saved?.filters ?? DEFAULT_FILTERS);
   const [projectKey, setProjectKey] = useState<string | null>(saved?.projectKey ?? null);
   const [page, setPage] = useState(0);
@@ -77,15 +159,16 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
   const [width, setWidth] = useState(0);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(0);
-    }, 300);
-    return () => clearTimeout(timer);
-  }, [searchInput]);
-  useEffect(() => {
-    remembered.set(host.id, { filters, projectKey });
+    rememberHost(host.id, { filters, projectKey });
   }, [host.id, filters, projectKey]);
+
+  const commitSearch = useCallback((value: string) => {
+    setSearch((current) => {
+      if (current === value) return current;
+      setPage(0);
+      return value;
+    });
+  }, []);
 
   const input: ListInput = useMemo(
     () => ({
@@ -110,27 +193,28 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
 
   const mode = layout.compact || (width > 0 && width < MEDIUM) ? "compact" : width >= WIDE ? "wide" : "medium";
   const wide = mode === "wide";
+  const extraWide = width >= XL;
 
-  const changeFilters = (patch: Partial<Filters>) => {
+  const changeFilters = useCallback((patch: Partial<Filters>) => {
     setFilters((current) => ({ ...current, ...patch }));
     setPage(0);
-  };
-  const changeProvider = (provider: ProviderFilter) => {
+  }, []);
+  const changeProvider = useCallback((provider: ProviderFilter) => {
     setFilters((current) => ({ ...current, provider }));
     setProjectKey(null);
     setPage(0);
-  };
-  const changeProject = (key: string | null) => {
+  }, []);
+  const changeProject = useCallback((key: string | null) => {
     setProjectKey(key);
     setPage(0);
-  };
-  const resetFilters = () => {
-    setSearchInput("");
+  }, []);
+  const resetFilters = useCallback(() => {
+    setSearchResetToken((token) => token + 1);
     setSearch("");
     setFilters(DEFAULT_FILTERS);
     setProjectKey(null);
     setPage(0);
-  };
+  }, []);
 
   const hasActiveFilters =
     Boolean(search) ||
@@ -149,8 +233,8 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
     });
   }, []);
   const open = useCallback((key: string) => setActiveKey(key), []);
-  const items = data?.items ?? [];
-  const togglePage = () => {
+  const items = useMemo(() => data?.items ?? [], [data?.items]);
+  const togglePage = useCallback(() => {
     setSelected((current) => {
       const next = new Set(current);
       const all = items.every((item) => next.has(item.key));
@@ -160,51 +244,87 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
       }
       return next;
     });
-  };
-  const requestDelete = (keys: string[]) => {
-    if (!wide) setActiveKey(null);
-    setDeleteKeys(keys);
-  };
-  const onDeleted = (result: OperationOutput) => {
-    const removed = new Set(result.results.filter((item) => item.ok).map((item) => item.id));
-    setSelected((current) => new Set([...current].filter((key) => !removed.has(key))));
-    if (activeKey && removed.has(activeKey)) setActiveKey(null);
-    setDeleteKeys(null);
-  };
+  }, [items]);
+  const clearSelection = useCallback(() => setSelected(new Set()), []);
+  const requestDelete = useCallback(
+    (keys: string[]) => {
+      if (!wide) setActiveKey(null);
+      setDeleteKeys(keys);
+    },
+    [wide],
+  );
+  const deleteSelected = useCallback(() => requestDelete([...selected]), [requestDelete, selected]);
+  const deleteSingle = useCallback((key: string) => requestDelete([key]), [requestDelete]);
+  const onDeleted = useCallback(
+    (result: OperationOutput) => {
+      const removed = new Set(result.results.filter((item) => item.ok).map((item) => item.id));
+      setSelected((current) => new Set([...current].filter((key) => !removed.has(key))));
+      if (activeKey && removed.has(activeKey)) setActiveKey(null);
+      setDeleteKeys(null);
+    },
+    [activeKey],
+  );
 
   const stats = data?.stats;
   const scanning = data?.scanning;
   const offline = hostStatus !== undefined && hostStatus !== "online";
 
-  const stateOptions: SelectOption<StateFilter>[] = [
-    { value: "all", label: t("filter.stateAll") },
-    { value: "active", label: t("filter.stateActive") },
-    { value: "idle", label: t("filter.stateIdle") },
-  ];
-  const healthOptions: SelectOption<HealthFilter>[] = [
-    { value: "all", label: t("filter.healthAll") },
-    { value: "ok", label: t("filter.healthOk") },
-    { value: "damaged", label: t("filter.healthDamaged") },
-    { value: "empty", label: t("filter.healthEmpty") },
-  ];
-  const originOptions: SelectOption<OriginFilter>[] = [
-    { value: "all", label: t("filter.originAll") },
-    { value: "paseo", label: t("filter.originPaseo") },
-    { value: "native", label: t("filter.originNative") },
-  ];
-  const sortOptions: SelectOption<SortKey>[] = [
-    { value: "updated", label: t("filter.sortUpdated") },
-    { value: "started", label: t("filter.sortStarted") },
-    { value: "size", label: t("filter.sortSize") },
-    { value: "messages", label: t("filter.sortMessages") },
-    { value: "title", label: t("filter.sortTitle") },
-  ];
-  const pageSizeOptions: SelectOption<string>[] = PAGE_SIZES.map((size) => ({ value: String(size), label: t("filter.pageSize", { count: size }) }));
-  const projects = data?.projects ?? [];
-  const projectOptions: SelectOption<string>[] = [
-    { value: "", label: t("projects.all") },
-    ...projects.map((project) => ({ value: project.key, label: baseName(project.path), hint: project.path })),
-  ];
+  const stateOptions = useMemo<SelectOption<StateFilter>[]>(
+    () => [
+      { value: "all", label: t("filter.stateAll") },
+      { value: "active", label: t("filter.stateActive") },
+      { value: "idle", label: t("filter.stateIdle") },
+    ],
+    [t],
+  );
+  const healthOptions = useMemo<SelectOption<HealthFilter>[]>(
+    () => [
+      { value: "all", label: t("filter.healthAll") },
+      { value: "ok", label: t("filter.healthOk") },
+      { value: "damaged", label: t("filter.healthDamaged") },
+      { value: "empty", label: t("filter.healthEmpty") },
+    ],
+    [t],
+  );
+  const originOptions = useMemo<SelectOption<OriginFilter>[]>(
+    () => [
+      { value: "all", label: t("filter.originAll") },
+      { value: "paseo", label: t("filter.originPaseo") },
+      { value: "native", label: t("filter.originNative") },
+    ],
+    [t],
+  );
+  const sortOptions = useMemo<SelectOption<SortKey>[]>(
+    () => [
+      { value: "updated", label: t("filter.sortUpdated") },
+      { value: "started", label: t("filter.sortStarted") },
+      { value: "size", label: t("filter.sortSize") },
+      { value: "messages", label: t("filter.sortMessages") },
+      { value: "title", label: t("filter.sortTitle") },
+    ],
+    [t],
+  );
+  const pageSizeOptions = useMemo<SelectOption<string>[]>(
+    () => PAGE_SIZES.map((size) => ({ value: String(size), label: t("filter.pageSize", { count: size }) })),
+    [t],
+  );
+  const projects = useMemo(() => data?.projects ?? [], [data?.projects]);
+  const projectOptions = useMemo<SelectOption<string>[]>(
+    () => [
+      { value: "", label: t("projects.all") },
+      ...projects.map((project) => ({ value: project.key, label: baseName(project.path), hint: project.path })),
+    ],
+    [projects, t],
+  );
+  const providerLabels = useMemo<Record<ProviderFilter, string>>(
+    () => ({
+      all: t("provider.all"),
+      claude: t("provider.claude"),
+      codex: t("provider.codex"),
+      antigravity: t("provider.antigravity"),
+    }),
+    [t],
+  );
 
   const px = mode === "compact" ? 12 : 16;
 
@@ -225,7 +345,7 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
               justifyContent: "center",
             }}
           >
-            <Icon name="History" size={16} color={c.accent} />
+            <Icon icon={SESSION_MANAGER_ICON} size={16} color={c.accent} />
           </View>
           <Text style={{ color: c.foreground, fontSize: mode === "compact" ? 16 : 17, fontWeight: "700", letterSpacing: -0.2 }}>{t("app.title")}</Text>
         </View>
@@ -291,46 +411,16 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
               total={stats?.sessions ?? 0}
               counts={stats?.byProvider}
               onChange={changeProvider}
-              labels={{
-                all: t("provider.all"),
-                claude: t("provider.claude"),
-                codex: t("provider.codex"),
-                antigravity: t("provider.antigravity"),
-              }}
+              labels={providerLabels}
             />
-            <View
-              style={{
-                flex: mode === "compact" ? undefined : 1,
-                minWidth: mode === "compact" ? undefined : 220,
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 8,
-                minHeight: 32,
-                paddingHorizontal: 10,
-                borderRadius: 5,
-                borderWidth: 1,
-                borderColor: searchInput ? c.accent : c.border,
-                backgroundColor: c.surface1,
-              }}
-            >
-              <Icon name="Search" size={14} color={c.foregroundMuted} />
-              <TextInput
-                value={searchInput}
-                onChangeText={setSearchInput}
-                placeholder={t("toolbar.search")}
-                placeholderTextColor={c.foregroundMuted}
-                accessibilityLabel={t("toolbar.search")}
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="search"
-                style={{ flex: 1, color: c.foreground, fontSize: 13, paddingVertical: 6 }}
-              />
-              {searchInput ? (
-                <Pressable accessibilityRole="button" accessibilityLabel={t("toolbar.clearSearch")} hitSlop={8} onPress={() => setSearchInput("")}>
-                  <Icon name="X" size={14} color={c.foregroundMuted} />
-                </Pressable>
-              ) : null}
-            </View>
+            <SearchBox
+              theme={theme}
+              compact={mode === "compact"}
+              placeholder={t("toolbar.search")}
+              clearLabel={t("toolbar.clearSearch")}
+              resetToken={searchResetToken}
+              onCommit={commitSearch}
+            />
           </View>
 
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6, alignItems: "center" }} style={{ flexGrow: 0 }}>
@@ -388,29 +478,8 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
     </View>
   );
 
-  const listPane = (
-    <SessionList
-      theme={theme}
-      compact={mode === "compact"}
-      items={items}
-      total={data?.total ?? 0}
-      page={data?.page ?? page}
-      pageSize={data?.pageSize ?? filters.pageSize}
-      selected={selected}
-      activeKey={activeKey}
-      showProject={!projectKey}
-      emptyHost={Boolean(data && data.stats.sessions === 0)}
-      onToggle={toggle}
-      onTogglePage={togglePage}
-      onClearSelection={() => setSelected(new Set())}
-      onDeleteSelected={() => requestDelete([...selected])}
-      onOpen={open}
-      onPage={setPage}
-    />
-  );
-  const openAgent = navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined;
-  const detail = <DetailPane theme={theme} hostId={host.id} sessionKey={activeKey} onDelete={(key) => requestDelete([key])} onOpenSession={open} openAgent={openAgent} />;
-
+  const openAgent = useMemo(() => (navigation ? (agentId: string) => navigation.openAgent({ agentId }) : undefined), [navigation]);
+  const detail = <DetailPane theme={theme} hostId={host.id} sessionKey={activeKey} onDelete={deleteSingle} onOpenSession={open} openAgent={openAgent} />;
   const providerTotal = filters.provider === "all" ? (stats?.sessions ?? 0) : (stats?.byProvider[filters.provider] ?? 0);
 
   return (
@@ -427,13 +496,30 @@ function ManagerView({ theme, layout, host, navigation }: PluginScreenProps) {
       ) : (
         <View style={{ flex: 1, flexDirection: "row", minHeight: 0 }}>
           {mode !== "compact" ? (
-            <ProjectNav theme={theme} width={wide ? 248 : 210} projects={projects} total={providerTotal} active={projectKey} onSelect={changeProject} />
+            <ProjectNav theme={theme} width={wide ? (extraWide ? 248 : 216) : 204} projects={projects} total={providerTotal} active={projectKey} onSelect={changeProject} />
           ) : null}
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ flexGrow: 1 }}>
-            {listPane}
+            <SessionList
+              theme={theme}
+              compact={mode === "compact"}
+              items={items}
+              total={data?.total ?? 0}
+              page={data?.page ?? page}
+              pageSize={data?.pageSize ?? filters.pageSize}
+              selected={selected}
+              activeKey={activeKey}
+              showProject={!projectKey}
+              emptyHost={Boolean(data && data.stats.sessions === 0)}
+              onToggle={toggle}
+              onTogglePage={togglePage}
+              onClearSelection={clearSelection}
+              onDeleteSelected={deleteSelected}
+              onOpen={open}
+              onPage={setPage}
+            />
           </ScrollView>
           {wide ? (
-            <View style={{ width: 428, borderLeftWidth: 1, borderLeftColor: c.border, backgroundColor: c.surface0 }}>
+            <View style={{ width: extraWide ? 428 : 376, borderLeftWidth: 1, borderLeftColor: c.border, backgroundColor: c.surface0 }}>
               <ScrollView style={{ flex: 1 }}>{detail}</ScrollView>
             </View>
           ) : null}
@@ -472,7 +558,7 @@ function TelemetryDivider({ theme }: { theme: PluginTheme }) {
   return <View style={{ width: 1, height: 12, backgroundColor: theme.colors.border }} />;
 }
 
-function ProviderBar({
+const ProviderBar = memo(function ProviderBar({
   theme,
   value,
   total,
@@ -563,7 +649,7 @@ function ProviderBar({
       </View>
     </ScrollView>
   );
-}
+});
 
 function HostChip({ theme, label, status, statusLabel }: { theme: PluginTheme; label: string; status?: string; statusLabel: string }) {
   const c = theme.colors;
@@ -627,7 +713,21 @@ function Tabs({ theme, tab, onTab, sessionsLabel, trashLabel }: { theme: PluginT
   );
 }
 
-function ProjectNav({ theme, width, projects, total, active, onSelect }: { theme: PluginTheme; width: number; projects: ProjectSummary[]; total: number; active: string | null; onSelect(key: string | null): void }) {
+const ProjectNav = memo(function ProjectNav({
+  theme,
+  width,
+  projects,
+  total,
+  active,
+  onSelect,
+}: {
+  theme: PluginTheme;
+  width: number;
+  projects: ProjectSummary[];
+  total: number;
+  active: string | null;
+  onSelect(key: string | null): void;
+}) {
   const { t } = useTranslation(messages);
   const c = theme.colors;
   const row = (key: string | null, title: string, subtitle: string | null, count: string, providers?: ProjectSummary["providers"]) => {
@@ -697,4 +797,4 @@ function ProjectNav({ theme, width, projects, total, active, onSelect }: { theme
       </ScrollView>
     </View>
   );
-}
+});

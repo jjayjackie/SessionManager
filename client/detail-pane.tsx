@@ -1,13 +1,14 @@
 import type { PluginTheme } from "@getpaseo/plugin";
 import { useTranslation } from "@getpaseo/plugin/client";
 import { copyText, Icon, useToast } from "@getpaseo/plugin/client/ui";
+import { useMemo } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
 import { formatBytes, resumeCommand } from "../shared/format";
 import type { DetailOutput, FileKind } from "../shared/schema";
 import { useSessionDetail } from "./data";
 import { errorText, formatDateTime, reasonFromError } from "./format";
 import { messages } from "./messages";
-import { useSessionBadges } from "./session-list";
+import { buildSessionBadges } from "./session-list";
 import { Badge, Banner, Button, Divider, Field, MetricCard, ProviderLogo, ProviderTag, SectionHeader, providerBrandColor } from "./ui";
 
 interface Props {
@@ -79,7 +80,7 @@ function DetailBody({
 }) {
   const { t, locale } = useTranslation(messages);
   const toast = useToast();
-  const badges = useSessionBadges()(detail.session);
+  const badges = useMemo(() => buildSessionBadges(detail.session, (key) => t(key as never)), [detail.session, t]);
   const c = theme.colors;
   const s = detail.session;
   const agent = s.paseo;
