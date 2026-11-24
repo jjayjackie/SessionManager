@@ -5,16 +5,22 @@ import { z } from "zod";
  * Every human-readable label is translated on the client; the server only sends codes.
  */
 
+export const PROVIDERS = ["claude", "codex", "antigravity"] as const;
+export const ProviderSchema = z.enum(PROVIDERS);
+export type ProviderId = z.infer<typeof ProviderSchema>;
+export const ProviderFilterSchema = z.enum(["all", ...PROVIDERS]);
+export type ProviderFilter = z.infer<typeof ProviderFilterSchema>;
+
 /** Why an action on a session or trash entry did not happen. */
 export const ReasonCodeSchema = z.enum([
-  "running", // a live Claude Code process owns the session
-  "recent", // the transcript was written moments ago; it may still be in use
+  "running", // a live agent process or active database lock owns the session
+  "recent", // the session files were written moments ago; they may still be in use
   "paseo_running", // a Paseo agent bound to this session is running
   "not_found", // the session or trash entry no longer exists
   "changed", // files changed after the delete preview; preview again
-  "unsafe_path", // a path left the Claude directory or is a symbolic link
+  "unsafe_path", // a path left the managed agent directory or is a symbolic link
   "conflict", // restoring would overwrite an existing file
-  "root_unavailable", // the original Claude directory is not configured on this host any more
+  "root_unavailable", // the original agent data directory is not configured on this host any more
   "manifest_invalid", // a trash entry has an unreadable manifest
   "io_error", // the filesystem refused the operation
 ]);
@@ -33,8 +39,9 @@ export type Health = z.infer<typeof HealthSchema>;
 export const TitleSourceSchema = z.enum(["custom", "ai", "summary", "prompt", "none"]);
 
 export const SessionSummarySchema = z.object({
-  /** Opaque key: `<root id>/<project directory>/<session id>`. Resolved only against the daemon's own scan. */
+  /** Opaque key resolved only against the daemon's own scan. */
   key: z.string(),
+  provider: ProviderSchema,
   sessionId: z.string(),
   projectKey: z.string(),
   rootId: z.string(),
@@ -47,13 +54,13 @@ export const SessionSummarySchema = z.object({
   updatedAt: z.string(),
   userMessages: z.number(),
   assistantMessages: z.number(),
-  /** Transcript plus the session directory (subagents, tool results). */
+  /** Transcript / conversation database plus per-session directories and subagents. */
   bytes: z.number(),
   subagentCount: z.number(),
   state: SessionStateSchema,
   health: HealthSchema,
   badLines: z.number(),
-  /** Another transcript with the same session ID exists on this host. */
+  /** Another session record with the same provider and session ID exists on this host. */
   duplicateId: z.boolean(),
   paseo: z.object({ agentId: z.string(), title: z.string(), archived: z.boolean() }).nullable(),
   /** Matching text around the first search hit, when a search is active. */
@@ -63,10 +70,9 @@ export type SessionSummary = z.infer<typeof SessionSummarySchema>;
 
 export const ProjectSummarySchema = z.object({
   key: z.string(),
-  rootId: z.string(),
-  directory: z.string(),
-  /** The working directory recorded by most sessions, or the encoded directory name. */
+  /** The working directory path, or a directory identifier when cwd is unrecorded. */
   path: z.string(),
+  providers: z.array(ProviderSchema),
   sessions: z.number(),
   /** Sessions matching the active search and filters, ignoring the project filter. */
   matching: z.number(),
@@ -77,6 +83,7 @@ export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
 
 export const RootSchema = z.object({
   id: z.string(),
+  provider: ProviderSchema,
   path: z.string(),
   isDefault: z.boolean(),
   source: z.enum(["env", "default", "paseo-provider"]),
@@ -84,6 +91,13 @@ export const RootSchema = z.object({
   sessions: z.number(),
 });
 export type RootInfo = z.infer<typeof RootSchema>;
+
+export const ProviderCountsSchema = z.object({
+  claude: z.number(),
+  codex: z.number(),
+  antigravity: z.number(),
+});
+export type ProviderCounts = z.infer<typeof ProviderCountsSchema>;
 
 export const StatsSchema = z.object({
   sessions: z.number(),
@@ -93,6 +107,7 @@ export const StatsSchema = z.object({
   damaged: z.number(),
   trashEntries: z.number(),
   trashBytes: z.number(),
+  byProvider: ProviderCountsSchema,
 });
 export type Stats = z.infer<typeof StatsSchema>;
 
@@ -110,6 +125,7 @@ export const PAGE_SIZES = [25, 50, 100] as const;
 export const MAX_BATCH = 500;
 
 export const ListInputSchema = z.object({
+  provider: ProviderFilterSchema.default("all"),
   search: z.string().max(200).default(""),
   projectKey: z.string().max(600).nullable().default(null),
   state: StateFilterSchema.default("all"),
@@ -147,11 +163,18 @@ export const FileKindSchema = z.enum([
   "session-env",
   "debug",
   "tasks",
+  "rollout",
+  "codex-capabilities",
+  "shell-snapshot",
+  "conversation-db",
+  "brain-dir",
+  "annotation",
+  "presence",
 ]);
 export type FileKind = z.infer<typeof FileKindSchema>;
 
 export const PlannedFileSchema = z.object({
-  /** Path relative to the Claude directory, with forward slashes. */
+  /** Path relative to the provider data directory, with forward slashes. */
   path: z.string(),
   kind: FileKindSchema,
   bytes: z.number(),
@@ -188,6 +211,7 @@ const KeysSchema = z.array(z.string().min(1).max(600)).min(1).max(MAX_BATCH);
 export const PreviewInputSchema = z.object({ keys: KeysSchema });
 export const PreviewItemSchema = z.object({
   key: z.string(),
+  provider: ProviderSchema,
   title: z.string(),
   fingerprint: z.string(),
   files: z.array(PlannedFileSchema),
@@ -223,6 +247,7 @@ export type OperationOutput = z.infer<typeof OperationOutputSchema>;
 
 export const TrashEntrySchema = z.object({
   trashId: z.string(),
+  provider: ProviderSchema,
   sessionId: z.string(),
   title: z.string(),
   cwd: z.string(),

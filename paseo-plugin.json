@@ -1,7 +1,7 @@
 {
-  "id": "claude-session-manager",
-  "name": "ClaudeSession",
-  "description": "Browse, search, delete, and restore native Claude Code session history on each Paseo host.",
+  "id": "session-manager",
+  "name": "SessionManager",
+  "description": "Browse, search, delete, and restore native Claude Code, Codex, and Antigravity sessions on each Paseo host.",
   "icon": "assets/icon.png",
   "media": [
     "assets/screenshots/sessions-en-light.png",
@@ -10,8 +10,8 @@
   ],
   "translations": {
     "zh-CN": {
-      "name": "ClaudeSession",
-      "description": "在每台 Paseo 主机上浏览、搜索、删除和恢复 Claude Code 原生历史会话。"
+      "name": "SessionManager",
+      "description": "在每台 Paseo 主机上浏览、搜索、删除和恢复 Claude Code、Codex 与 Antigravity 原生历史会话。"
     }
   },
   "requirements": { "paseo": ">=0.13.0" }

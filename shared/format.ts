@@ -1,3 +1,5 @@
+import type { ProviderId } from "./schema";
+
 /** Plain helpers shared by the app and the daemon. No runtime-specific imports. */
 
 /** POSIX single-quote a shell word. */
@@ -7,23 +9,32 @@ export function shellQuote(value: string): string {
 }
 
 export interface ResumeTarget {
+  provider: ProviderId;
   sessionId: string;
   cwd: string;
-  /** Claude configuration directory holding the transcript. */
+  /** Provider configuration/data directory holding the session. */
   rootPath: string;
   isDefaultRoot: boolean;
 }
 
 /**
- * The command that reopens a session in Claude Code. Claude looks sessions up in the project
- * directory of the current working directory, so the command changes into the recorded cwd, and it
- * selects a non-default configuration directory explicitly.
+ * Builds the CLI command that reopens a session in its native coding agent.
+ * - Claude Code: `cd <cwd> && [CLAUDE_CONFIG_DIR=<root>] claude --resume <id>`
+ * - Codex:       `cd <cwd> && [CODEX_HOME=<root>] codex resume <id>`
+ * - Antigravity: `cd <cwd> && agy --conversation <id>`
  */
 export function resumeCommand(target: ResumeTarget): string {
   const parts: string[] = [];
   if (target.cwd) parts.push(`cd ${shellQuote(target.cwd)} &&`);
-  if (!target.isDefaultRoot) parts.push(`CLAUDE_CONFIG_DIR=${shellQuote(target.rootPath)}`);
-  parts.push("claude", "--resume", shellQuote(target.sessionId));
+  if (target.provider === "claude") {
+    if (!target.isDefaultRoot) parts.push(`CLAUDE_CONFIG_DIR=${shellQuote(target.rootPath)}`);
+    parts.push("claude", "--resume", shellQuote(target.sessionId));
+  } else if (target.provider === "codex") {
+    if (!target.isDefaultRoot) parts.push(`CODEX_HOME=${shellQuote(target.rootPath)}`);
+    parts.push("codex", "resume", shellQuote(target.sessionId));
+  } else {
+    parts.push("agy", "--conversation", shellQuote(target.sessionId));
+  }
   return parts.join(" ");
 }
 
@@ -44,7 +55,7 @@ export function formatBytes(bytes: number): string {
  * another, even if the app shares a cache between installations.
  */
 export function hostKey(hostId: string, ...parts: readonly unknown[]): readonly unknown[] {
-  return ["claude-session-manager", hostId, ...parts];
+  return ["session-manager", hostId, ...parts];
 }
 
 /** Collapse whitespace and cut to `max` code points with an ellipsis. */
